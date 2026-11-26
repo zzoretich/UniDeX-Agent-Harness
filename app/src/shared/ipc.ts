@@ -107,8 +107,9 @@ export const CH = {
   sessionStop: "session:stop",
   sessionRemove: "session:remove",
   sessionList: "session:list",
-  sessionCatalog: "session:catalog",
   sessionRead: "session:read",
+  /** Each host's models and commands, for Code's composer and Routines (remove-sessions D11), whichever surfaces are on. Invoke. */
+  hostsCatalog: "hosts:catalog",
   // The Code chat view (spec 2026-11-09-code-chat): main follows an agent terminal's transcript into a cache the page reads.
   codeFollow: "code:follow",
   codeUnfollow: "code:unfollow",
@@ -772,9 +773,12 @@ export interface AosBridge {
     remove(thread: string): Promise<Result<null>>;
     list(): Promise<Result<SessionThread[]>>;
     read(thread: string): Promise<Result<SessionEventRecord[]>>;
+    onEvent(cb: (ev: SessionEvent) => void): () => void;
+  };
+  /** What Code needs of the host CLIs (remove-sessions D11), answered whichever surfaces are on. */
+  hosts: {
     /** Each host's models and commands (cached by the runtime for a day; `refresh` asks the hosts again). */
     catalog(refresh?: boolean): Promise<Result<HostCatalog>>;
-    onEvent(cb: (ev: SessionEvent) => void): () => void;
   };
   /** The Code chat view's transcript mirror (spec 2026-11-09-code-chat), run by main while the Code chat surface is on, its
    *  Diff pane's read-only git, and its composer's images. */

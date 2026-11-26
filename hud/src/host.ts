@@ -295,6 +295,12 @@ export interface HostCode {
   saveImage?(req: { mime: string; data: string }): Promise<HostResult<{ path: string }>>;
 }
 
+/** What Code needs of the host CLIs (remove-sessions D11): the app's main answers whichever surfaces are on. */
+export interface HostHosts {
+  /** Each host's models and commands (the runtime's cache; `refresh` asks the hosts again). */
+  catalog(refresh?: boolean): Promise<HostResult<HostCatalog>>;
+}
+
 export interface HostSessions {
   /** Opens a thread in a workspace and starts its first turn; events follow on onEvent. */
   start(req: { workspace: string; host: HostSessionHost; text: string; model?: string | null; effort?: string | null; access?: HostSessionAccess; allowCommands?: boolean }): Promise<HostResult<HostSessionThread>>;
@@ -305,8 +311,6 @@ export interface HostSessions {
   remove(thread: string): Promise<HostResult<null>>;
   list(): Promise<HostResult<HostSessionThread[]>>;
   read(thread: string): Promise<HostResult<HostSessionEvent[]>>;
-  /** Each host's models and commands; `refresh` asks the hosts again. */
-  catalog(refresh?: boolean): Promise<HostResult<HostCatalog>>;
   onEvent(cb: (ev: { thread: string; event: HostSessionEvent }) => void): () => void;
 }
 
@@ -350,6 +354,8 @@ export interface HudHost {
   env: HostEnv;
   /** Agent sessions and their repositories: only the app has them (its main runs the turns); undefined elsewhere. */
   sessions?: HostSessions;
+  /** The host CLIs' models and commands (remove-sessions D11): the app's alone. */
+  hosts?: HostHosts;
   /** The Computer pane's calls: only the app has them; undefined elsewhere. */
   computer?: HostComputer;
   /** The Code chat view's transcript mirror: only the app has it; undefined elsewhere. */
@@ -422,6 +428,9 @@ export const shell: HostShell = {
 /** Whether the installed host runs the Code chat's followers now (its surface is on): only then does a terminal carry
  *  AOS_TERMINAL (code-chat F9). */
 export function codeChatOn(): boolean { return hudHost().code?.enabled === true; }
+
+/** The installed host's catalog of models and commands, or null when it has none (plain Node). */
+export function hostsHost(): HostHosts | null { return hudHost().hosts ?? null; }
 
 /** The installed host's sessions and git, or null when it has none (plain Node). */
 export function sessionsHost(): { sessions: HostSessions; git: HostGit } | null {

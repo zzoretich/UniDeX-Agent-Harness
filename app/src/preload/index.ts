@@ -123,8 +123,10 @@ const api: AosBridge = {
     remove: (thread) => invoke(CH.sessionRemove, { thread }),
     list: () => invoke(CH.sessionList, {}),
     read: (thread) => invoke(CH.sessionRead, { thread }),
-    catalog: (refresh) => invoke(CH.sessionCatalog, refresh ? { refresh: true } : {}),
     onEvent: (cb) => listen<SessionEvent>(CH.sessionEvent, cb),
+  },
+  hosts: {
+    catalog: (refresh) => invoke(CH.hostsCatalog, refresh ? { refresh: true } : {}),
   },
   code: {
     follow: (req) => invoke(CH.codeFollow, req),

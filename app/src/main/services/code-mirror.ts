@@ -38,9 +38,10 @@ const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
 const validId = (id: unknown): id is string => typeof id === "string" && SESSION_ID.test(id) && !id.includes("..") && !id.startsWith("-");
 
 const RULES = SURFACES.find((s) => s.id === "code")?.spawns.filter((r) => r.script === "lib/sessions.js") ?? [];
-/** The `code` surface's spawn rules (shared/surfaces.ts): main runs no mirror command the table does not list. */
+/** The `code` surface's spawn rules (shared/surfaces.ts): main runs no mirror command the table does not list. Only its
+ *  `mirror` rules: the surface's `catalog` ones are HostService's (remove-sessions D11). */
 export const mirrorAllowed = (args: readonly string[]): boolean =>
-  RULES.some((r) => (typeof r.args === "function" ? r.args(args) : r.args.test(args.join(" "))));
+  args[0] === "mirror" && RULES.some((r) => (typeof r.args === "function" ? r.args(args) : r.args.test(args.join(" "))));
 
 export interface CodeMirrorOptions {
   vaultRoot: () => string | null;

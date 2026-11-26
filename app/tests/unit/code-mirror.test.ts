@@ -54,14 +54,14 @@ function rig(opts: { on?: boolean; info?: Info | null | ((pty: string) => Info |
 }
 const script = path.join(vault, "brain", "scripts", "lib", "sessions.js");
 
-test("the surface lists four mirror argv shapes, on by default since its live check on each host, writing only the caches", () => {
+test("the surface lists four mirror argv shapes and the hosts' catalog (remove-sessions D11), on by default since its live check on each host, writing only the caches", () => {
   const code = SURFACES.find((x) => x.id === "code");
   assert.ok(code);
   assert.equal(code.verified, true);
   assert.equal(code.scope, "main");
-  assert.deepEqual(code.writes, ["brain/_index/code/*.jsonl", "brain/_index/code/*.claim.json"]);
+  assert.deepEqual(code.writes, ["brain/_index/code/*.jsonl", "brain/_index/code/*.claim.json", "brain/_index/host-catalog.json"]);
   assert.deepEqual(code.folders, ["brain/_index/code"]);
-  assert.equal(code.spawns.length, 4);
+  assert.equal(code.spawns.length, 6);
 });
 
 test("mirrorAllowed: exactly the four shapes, with ids, keys and numbers in their places", () => {
@@ -71,6 +71,9 @@ test("mirrorAllowed: exactly the four shapes, with ids, keys and numbers in thei
   assert.equal(mirrorAllowed(["mirror", "--host", "codex", "--id", "abc", "--cwd", "/work/demo", "--since", "1", "--once"]), false);
   assert.ok(mirrorAllowed(["mirror", "--host", "codex", "--cwd", "/work/demo", "--since", "1700000000123", "--terminal", KEY, "--follow"]));
   assert.ok(mirrorAllowed(["mirror", "--host", "codex", "--id", "abc", "--once"]));
+  // The surface's catalog rules (remove-sessions D11) are HostService's: the mirror never runs them.
+  assert.equal(mirrorAllowed(["catalog"]), false);
+  assert.equal(mirrorAllowed(["catalog", "--refresh"]), false);
   for (const bad of [
     ["mirror", "--host", "sh", "--id", "abc", "--once"],
     ["mirror", "--host", "claude", "--id", "..", "--once"],

@@ -99,7 +99,7 @@ const SLUG = /[a-z0-9][a-z0-9-]{1,40}/;     // RoutinesTab's routine slug
 const ASK_HOST = /--host=(?:claude|codex)/;
 const ASK_MODEL = new RegExp(`--model=${WORD.source}`);
 const ASK_EFFORT = /--effort=(?:minimal|low|medium|high|xhigh|max)/;
-// A computer ask notice's title (agent-computer D27; lib/notifications.js validate), which main/services/sessions.ts checks
+// A computer ask notice's title (agent-computer D27; lib/notifications.js validate), which main/services/hosts.ts checks
 // against this rule before it runs notify.js: one line of 1-160 characters, not dash-led, so it can never read as a flag.
 const NOTICE_TITLE = /[^\s-][^\r\n\u2028\u2029]{0,159}/;
 // An MCP server's name as both host CLIs take it (cli/mcp.js NAME_RE, hud/src/data/mcpServers.ts MCP_NAME_RE).
@@ -658,15 +658,13 @@ export const SURFACES: readonly Surface[] = [
     label: "Sessions",
     source: "main/services/sessions.ts and main/services/git.ts, for views/SessionsTab.ts (spec 2026-10-07-unidex-sessions): main runs each turn through the runtime's lib/sessions.js in a workspace folder, keeps the thread, and diffs and commits the workspace repository; Delete thread moves only the thread's own file to the Trash and leaves the host's own transcript alone; the page only names a workspace, a host and a prompt",
     scope: "main",
-    writes: ["brain/_index/sessions/*/*.jsonl", "brain/_index/provider-spend.jsonl", "brain/_index/agent-runs/runs.jsonl", "brain/_index/host-catalog.json"],
+    writes: ["brain/_index/sessions/*/*.jsonl", "brain/_index/provider-spend.jsonl", "brain/_index/agent-runs/runs.jsonl"],
     folders: ["brain/_index/sessions", "brain/_index/sessions/*", "brain/_index/agent-runs"],
     spawns: [
       { script: "lib/sessions.js", args: argv("args", JSON_OBJ) },
       { script: "lib/sessions.js", args: argv("events", "--host", /claude|codex/) },
       { script: "lib/sessions.js", args: argv("events", "--host", /claude|codex/, "--model", WORD) },
       { script: "lib/sessions.js", args: argv("record", JSON_OBJ) },
-      { script: "lib/sessions.js", args: argv("catalog") },
-      { script: "lib/sessions.js", args: argv("catalog", "--refresh") },
     ],
     // Checked live on 2026-10-07 (plan 2026-10-07-unidex-sessions C3): a turn and a resume on each host through the runtime
     // and the real CLIs, recorded in the ledger and in Runs.
@@ -675,7 +673,7 @@ export const SURFACES: readonly Surface[] = [
   {
     id: "computer",
     label: "Computer",
-    source: "main/computer (the bridge socket; notify.ts's ask notices, posted by main/services/sessions.ts postComputerNotice)",
+    source: "main/computer (the bridge socket; notify.ts's ask notices, posted by main/services/hosts.ts postComputerNotice)",
     // agent-computer D26: main runs the computer only while this surface is on: the bridge (D18) starts with it and stops
     // without it, and so do the ask notices' posts. `computer.enabled` is the person's switch inside it (D25). On by
     // default since its live check per host (2026-11-08: a Chat turn and a Code session each on Claude Code 2.1.318 and
@@ -706,9 +704,13 @@ export const SURFACES: readonly Surface[] = [
     // process, the model chip restarted the same conversation, Diff showed the branch and kept its scroll, and pasted images
     // reached each TUI as [Image #N]. The fixes it found are in the same release (code-chat R61–R73).
     scope: "main",
-    writes: ["brain/_index/code/*.jsonl", "brain/_index/code/*.claim.json"],
+    // remove-sessions D11: the catalog of each host's models and commands (hosts:catalog, for the composer and Routines)
+    // re-homed here from the Sessions surface; main answers it whichever surfaces are on, as it did there for Code.
+    writes: ["brain/_index/code/*.jsonl", "brain/_index/code/*.claim.json", "brain/_index/host-catalog.json"],
     folders: ["brain/_index/code"],
     spawns: [
+      { script: "lib/sessions.js", args: argv("catalog") },
+      { script: "lib/sessions.js", args: argv("catalog", "--refresh") },
       { script: "lib/sessions.js", args: argv("mirror", "--host", /claude|codex/, "--id", MIRROR_ID, "--terminal", TERMINAL_KEY, "--follow") },
       { script: "lib/sessions.js", args: argv("mirror", "--host", /claude|codex/, "--cwd", MIRROR_CWD, "--since", MIRROR_SINCE, "--terminal", TERMINAL_KEY, "--follow") },
       // R18: a Codex terminal whose conversation the deck knows starts on that rollout, then follows its folder.

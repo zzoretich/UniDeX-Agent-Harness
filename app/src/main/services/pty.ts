@@ -24,7 +24,7 @@ import type { AgentRef, AgentRegistry } from "../computer/registry";
 import { agentArgvRefusal } from "../policy/agent-launch";
 import { programRefusal, ptyEnv, shellRefusal, UUID_RE, type ProgramContext } from "../policy/programs";
 import { failure, refused } from "./fs";
-import type { BinResolution } from "./sessions";
+import type { BinResolution } from "./hosts";
 
 export type { PtyAgentRequest };
 

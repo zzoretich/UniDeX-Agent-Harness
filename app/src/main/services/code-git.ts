@@ -12,7 +12,7 @@ import type { CodeGitRequest, GitDiff, GitStatus, Result } from "../../shared/ip
 import { parseRepoLink } from "../../../../hud/src/data/repoLink";
 import { refused } from "./fs";
 import type { GitService, WorkspaceDir } from "./git";
-import { WORKSPACE_RE } from "./sessions";
+import { WORKSPACE_RE } from "./hosts";
 
 /** The most of a workspace.md read for its `repo:` (the frontmatter is its first lines). */
 const MANIFEST_MAX = 256 * 1024;
@@ -71,7 +71,7 @@ export function resolveCodeRepo(vault: string, cwd: string, o: CodeRepoOptions =
   const root = real(path.join(v, "workspaces"));
   if (root && c !== root && within(c, root)) {
     const name = path.relative(root, c).split(path.sep)[0];
-    // Not a hidden folder, the team worktrees or the archive (sessions.ts WORKSPACE_RE).
+    // Not a hidden folder, the team worktrees or the archive (hosts.ts WORKSPACE_RE).
     return WORKSPACE_RE.test(name) ? { dir: path.join(root, name) } : { refusal: "not a workspace folder" };
   }
   if (within(c, v)) return { refusal: "the vault, outside its workspaces" };

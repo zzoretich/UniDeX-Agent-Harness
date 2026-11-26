@@ -32,6 +32,7 @@ import { registerHostIpc } from "./ipc/host";
 import { registerProcIpc } from "./ipc/proc";
 import { registerProposalsIpc } from "./ipc/proposals";
 import { registerCodeIpc } from "./ipc/code";
+import { registerHostsIpc } from "./ipc/hosts";
 import { registerSessionIpc } from "./ipc/sessions";
 import { registerSetupIpc, registerUpdateIpc } from "./ipc/setup";
 import { externalOpens, openExternalAwaited, openExternalSafe, registerShellIpc } from "./ipc/shell";
@@ -57,6 +58,7 @@ import { CodeGitService } from "./services/code-git";
 import { CodeImageService } from "./services/code-images";
 import { CodeMirrorService } from "./services/code-mirror";
 import { PtyService, terminalBaseEnv, type PtyLib } from "./services/pty";
+import { HostService } from "./services/hosts";
 import { SessionService, workspaceDir } from "./services/sessions";
 import { attachInfo, hostsOf } from "./setup/attach";
 import { SetupController, type AgenticosJson } from "./setup/controller";
@@ -180,7 +182,7 @@ const noDaemonProbe = new FlagProbe("--no-daemon");
 const ptyService = new PtyService({
   context: () => context, env: () => terminalBaseEnv(process.env, termPATH()), emit: (ev) => send(CH.ptyEvent, ev), load: () => require("node-pty") as PtyLib,
   computerOn: () => computerOn(), shellEnv: (shell, cwd, base) => loginShellEnv(shell, cwd, base),
-  resolveBin: (host) => sessionService.resolveBin(host), registry: agentRegistry, sys: computerSys, trusted: e2e.trustedCli,
+  resolveBin: (host) => hostService.resolveBin(host), registry: agentRegistry, sys: computerSys, trusted: e2e.trustedCli,
   // agent-computer R70: a Codex launch runs without Codex's shared background server when its CLI's help lists the flag
   // (the help read with the launch's environment, R77).
   noDaemon: (bin, env, sub) => noDaemonProbe.lists(bin, { env, sub }),
@@ -223,15 +225,21 @@ function sessionNode(): string | null {
   if (typeof recorded === "string" && isExecutable(recorded)) return recorded;
   return findOnPath("node", termPATH());
 }
+// What Code needs of the host CLIs (remove-sessions D11): a launch's binary, the composer's and Routines' catalog, and the
+// Computer's off-screen notices. No surface gates it: Code needs it whichever surfaces are on (the notices keep the
+// Computer surface's own check).
+const hostService = new HostService({
+  vaultRoot: () => context.vaultRoot ?? null, computerOn, context: () => context, env: process.env, node: sessionNode,
+  // A Code launch's binary is the one its terminal's PATH finds, as the typed line's was (agent-computer D18).
+  terminalPATH: () => termPATH(),
+});
 const sessionService = new SessionService({
   trash: (file) => shell.trashItem(file),
   onRemoved: (thread) => { computerService.forget(`chat:${thread}`); computerDoor?.revoke(`chat:${thread}`); },
   browserEnv,
-  vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, computerOn, context: () => context, env: process.env, node: sessionNode,
+  vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, context: () => context, env: process.env, node: sessionNode,
   // A turn's start and end are when a thread's title may have changed: the browser's label is read again then, not on every state.
   emit: (ev) => { send(CH.sessionEvent, ev); if (ev.event.kind === "prompt" || ev.event.kind === "done") computerService.retitled(`chat:${ev.thread}`); },
-  // A Code launch's binary is the one its terminal's PATH finds, as the typed line's was (agent-computer D18).
-  terminalPATH: () => termPATH(),
   // A Chat turn's CLI is registered while it runs, under its thread's key (`chat:<thread>`: its own browser, session-browser
   // S1, which supersedes the folder-wide computer of agent-computer D3 and D30); its place is only the folder's label.
   // Its exit ends the turn on the computer too: the wheel frees and its asks are cancelled (D31).
@@ -280,7 +288,7 @@ const askNotifier = new AskNotifier({
     // Held until the ask settles (the notifier withdraws it then), so its click handler stays alive.
     return () => n.close();
   },
-  post: (title, body) => sessionService.postComputerNotice(title, body),
+  post: (title, body) => hostService.postComputerNotice(title, body),
   reveal: (askId) => { show(); sendComputerEvent({ type: "reveal", askId }); },
 });
 const askBroker = new AskBroker({
@@ -769,6 +777,7 @@ registerHostIpc(trust, {
 });
 registerFsIpc(trust, () => fsService);
 registerProcIpc(trust, procService, ptyService);
+registerHostsIpc(trust, hostService);
 registerSessionIpc(trust, sessionService, gitService);
 registerCodeIpc(trust, codeMirror, codeGit, codeImages);
 registerShellIpc(trust, () => (vault.root ? scope : null), () => vault.root);

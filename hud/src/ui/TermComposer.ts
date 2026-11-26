@@ -1,7 +1,7 @@
 import { Notice, setIcon } from "obsidian";
 import * as path from "path";
 import type AgenticOSPlugin from "../../main";
-import { codeChatOn, fs, hudHost, sessionsHost, type HostCatalog } from "../host";
+import { codeChatOn, fs, hostsHost, hudHost, type HostCatalog } from "../host";
 import { HOST_LABEL, aliasCatalog, catalogHost, catalogModelId, hostChoices, sameModel, transcriptModelName, type HostChoice } from "../data/agentSessions";
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import { hasChat, processKey, type TerminalSession } from "../data/terminalSession";
@@ -392,9 +392,9 @@ export class TermComposer {
 
   private async loadCommands(host: "claude" | "codex"): Promise<void> {
     if (!this.catalog) {
-      const sh = sessionsHost();
+      const hh = hostsHost();
       try {
-        const r = sh ? await sh.sessions.catalog() : null;
+        const r = hh ? await hh.catalog() : null;
         this.catalog = r && r.ok ? r.data : aliasCatalog(new Date());
       } catch { this.catalog = aliasCatalog(new Date()); }
       // The hosts are read again with the catalog (a login since may have changed them).

@@ -214,7 +214,7 @@ export const UnwireArgs = z.object({ host: z.enum(["claude", "codex"]), choice: 
 // and the runtime decide everything else.
 /** A thread id, as main makes them (randomUUID). */
 const ThreadId = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-/** A folder under <vault>/workspaces: one segment, not hidden, not the team worktrees (services/sessions.ts WORKSPACE_RE). */
+/** A folder under <vault>/workspaces: one segment, not hidden, not the team worktrees (services/hosts.ts WORKSPACE_RE). */
 const WorkspaceName = z.string().max(128).regex(/^[^._/\\\0][^/\\\0]*$/);
 const Prompt = z.string().max(64 * 1024).refine((s) => s.trim().length > 0 && !s.includes("\0"), "a prompt");
 /** A model, never one that could read as a flag. */
@@ -241,7 +241,8 @@ export const SessionSendSchema: z.ZodType<SessionSendRequest> = z.object({
   access: SessionAccess.optional(),
   allowCommands: z.boolean().optional(),
 }).strict();
-export const SessionCatalogArgs = z.object({ refresh: z.literal(true).optional() }).strict();
+/** hosts:catalog (remove-sessions D11): only whether to ask the hosts again. */
+export const HostsCatalogArgs = z.object({ refresh: z.literal(true).optional() }).strict();
 export const ThreadArgs = z.object({ thread: ThreadId }).strict();
 /** session:remove takes the same shape as the stop call (a thread id, never a path). */
 export const SessionRemoveSchema = ThreadArgs;

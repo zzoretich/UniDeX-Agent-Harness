@@ -4,7 +4,7 @@
 import { CH } from "../../shared/ipc";
 import type { GitService } from "../services/git";
 import type { SessionService } from "../services/sessions";
-import { GitCommitArgs, GitDiffArgs, GitStatusArgs, NoArgs, SessionCatalogArgs, SessionRemoveSchema, SessionSendSchema, SessionStartSchema, ThreadArgs } from "./schemas";
+import { GitCommitArgs, GitDiffArgs, GitStatusArgs, NoArgs, SessionRemoveSchema, SessionSendSchema, SessionStartSchema, ThreadArgs } from "./schemas";
 import { onInvoke, onSend, type Trust } from "./trust";
 
 export function registerSessionIpc(trust: Trust, sessions: SessionService, git: GitService): void {
@@ -14,7 +14,6 @@ export function registerSessionIpc(trust: Trust, sessions: SessionService, git: 
   onInvoke(CH.sessionRemove, trust, SessionRemoveSchema, ({ thread }) => sessions.remove(thread));
   onInvoke(CH.sessionList, trust, NoArgs, () => sessions.list());
   onInvoke(CH.sessionRead, trust, ThreadArgs, ({ thread }) => sessions.read(thread));
-  onInvoke(CH.sessionCatalog, trust, SessionCatalogArgs, ({ refresh }) => sessions.catalog(refresh === true));
   onInvoke(CH.gitStatus, trust, GitStatusArgs, ({ workspace }) => git.status(workspace));
   onInvoke(CH.gitDiff, trust, GitDiffArgs, ({ workspace, file }) => git.diff(workspace, file));
   onInvoke(CH.gitCommit, trust, GitCommitArgs, ({ workspace, message }) => git.commit(workspace, message));

@@ -3,7 +3,7 @@
 // recorded in the guard log and answered as Node would answer a refusal: an EROFS error, or for a spawn a child that
 // prints why and exits 1 (as the page's write guards did before main took the checks over).
 
-import type { HostChild, HostCode, HostComputer, HostDirent, HostFs, HostGit, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
+import type { HostChild, HostCode, HostComputer, HostDirent, HostFs, HostGit, HostHosts, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
 import { refuse } from "../../obsidian-compat/src/guard";
 import { callError } from "../../obsidian-compat/src/bridge";
 import * as path from "./shims/path";
@@ -268,9 +268,10 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     remove: (thread) => settle(aos.sessions.remove(thread)),
     list: () => settle(aos.sessions.list()),
     read: (thread) => settle(aos.sessions.read(thread)),
-    catalog: (refresh) => settle(aos.sessions.catalog(refresh)),
     onEvent: (cb) => aos.sessions.onEvent(cb),
   };
+  // What Code needs of the host CLIs (remove-sessions D11): main answers whichever surfaces are on.
+  const hosts: HostHosts = { catalog: (refresh) => settle(aos.hosts.catalog(refresh)) };
   // The Code chat view's transcript mirror (spec 2026-11-09-code-chat): main answers a refusal while its surface is off.
   const code: HostCode = {
     // The surfaces are fixed when the app starts: off, no terminal carries AOS_TERMINAL (code-chat F9).
@@ -301,6 +302,7 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     fs,
     spawn,
     sessions,
+    hosts,
     computer,
     code,
     git,

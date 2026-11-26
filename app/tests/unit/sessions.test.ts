@@ -267,56 +267,6 @@ test("onAgent: the turn's CLI is announced with its pid, workspace, host, access
   assert.equal(agents.length, 2);
 });
 
-test("resolveBin: the binary the runtime resolves for a Code launch (sessions.js bin), or why not", async () => {
-  const { s } = service();
-  assert.deepEqual(await s.resolveBin("claude"), { bin: CLAUDE });
-  assert.deepEqual(await s.resolveBin("codex"), { bin: CODEX });
-  const noNode = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => null, emit: () => {} });
-  assert.deepEqual(await noNode.resolveBin("claude"), { reason: "no node: run aos doctor" });
-  // Not behind the Sessions surface: a Code launch needs no Sessions.
-  assert.deepEqual(await service(false).s.resolveBin("claude"), { bin: CLAUDE });
-  const noVault = new SessionService({ trash: async () => {}, vaultRoot: () => null, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
-  assert.deepEqual(await noVault.resolveBin("claude"), { reason: "no vault is open" });
-  // With no binary recorded, the one a Code terminal's PATH finds: the CLI its typed line would have run.
-  const termBin = path.join(tmp, "term-bin");
-  fs.mkdirSync(termBin, { recursive: true });
-  const termCodex = path.join(termBin, "codex");
-  fs.writeFileSync(termCodex, "#!/bin/sh\n", { mode: 0o755 });
-  fs.writeFileSync(path.join(vault, "brain", "config.json"), JSON.stringify({ hosts: { claude: { enabled: true, bin: CLAUDE }, codex: { enabled: true } } }));
-  try {
-    const onPath = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, terminalPATH: () => `${termBin}:/usr/bin:/bin` });
-    assert.deepEqual(await onPath.resolveBin("codex"), { bin: termCodex });
-    assert.deepEqual(await onPath.resolveBin("claude"), { bin: CLAUDE }, "a recorded binary still comes first");
-    // The runtime found none (AOS_NO_CODEX hides every Codex, the usual install folders included).
-    const hidden = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context, env: { ...env, AOS_NO_CODEX: "1" }, node: () => process.execPath, emit: () => {} });
-    assert.deepEqual(await hidden.resolveBin("codex"), { reason: "the runtime found no Codex binary: run aos doctor" });
-  } finally { config(); }
-});
-
-/** A SessionService whose `sessions.js bin` is replaced by `code` (node -e): an old runtime, or one that never answers. */
-function binStandIn(code: string, extra: Partial<ConstructorParameters<typeof SessionService>[0]> = {}) {
-  const children: childProcess.ChildProcess[] = [];
-  const spawnImpl = ((cmd: string, args: string[], opts: object) => {
-    const c = args[1] === "bin" ? childProcess.spawn(process.execPath, ["-e", code], opts) : childProcess.spawn(cmd, args, opts);
-    if (args[1] === "bin") children.push(c);
-    return c;
-  }) as unknown as typeof childProcess.spawn;
-  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl, ...extra });
-  return { s, children };
-}
-
-test("resolveBin: a runtime older than the bin verb says to upgrade; one that never answers is given up on and killed", async () => {
-  const old = binStandIn("process.stderr.write('usage: sessions.js args <json> | events --host claude|codex [--model m] | catalog [--refresh] [--host h] | record <json>\\n'); process.exit(2);");
-  assert.deepEqual(await old.s.resolveBin("claude"), { reason: "the runtime is older than this app: run aos upgrade" });
-  const hung = binStandIn("setInterval(() => {}, 1000);", { binTimeoutMs: 300 });
-  const started = Date.now();
-  assert.deepEqual(await hung.s.resolveBin("claude"), { reason: "the runtime didn't answer" });
-  assert.ok(Date.now() - started < 5000);
-  const child = hung.children[0];
-  if (child.exitCode === null && child.signalCode === null) await new Promise((r) => child.once("exit", r));
-  assert.ok(child.signalCode !== null, "the runtime child was killed");
-});
-
 test("nothing runs while the Sessions surface is off, and a thread that is not there is ENOENT", async () => {
   const { s } = service(false);
   assert.deepEqual(await s.start({ workspace: "harbor-map", host: "claude", text: "x" }), { ok: false, error: "the Sessions surface is off", code: "EROFS" });
@@ -646,20 +596,6 @@ test("each turn runs with its own model, effort and access; a send that names no
   assert.equal(flag(calls().at(-1) as string[], "--allowedTools"), ALL, "allowCommands false still reads as edit");
 });
 
-test("catalog: the runtime's answer for each host; a host that does not answer keeps its aliases; refused while Sessions is off", async () => {
-  const { s } = service();
-  const [a, b] = await Promise.all([s.catalog(), s.catalog()]);
-  assert.ok(a.ok, JSON.stringify(a));
-  assert.deepEqual(b, a, "one fetch at a time: the second call shares the first");
-  assert.equal(a.data.schema, 1);
-  const claude = a.data.hosts.claude;
-  assert.ok(claude && !claude.ok && claude.reason, "the stand-in claude never answers initialize");
-  assert.deepEqual(claude.models.map((m) => m.id), ["default", "opus", "fable", "sonnet", "haiku"]);
-  assert.ok(fs.existsSync(path.join(vault, "brain", "_index", "host-catalog.json")));
-  assert.ok((await s.catalog(true)).ok);
-  assert.deepEqual(await service(false).s.catalog(), { ok: false, error: "the Sessions surface is off", code: "EROFS" });
-});
-
 test("an archived workspace's threads stay listed and readable, and refuse a turn until Restore (spaces-redesign D17)", async () => {
   const { s } = service();
   const live = path.join(vault, "workspaces", "tide-log");
@@ -731,47 +667,6 @@ test("noteEvent: a Computer pane line reaches the page as a live computer event 
   const n = events.length;
   s.noteEvent("no-such-thread", "x");
   assert.equal(events.length, n, "a thread main does not know gets nothing");
-});
-
-test("postComputerNotice: one Notifications item from computer at level info, through the runtime's notify.js, the body on stdin (agent-computer D27)", async () => {
-  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {} });
-  const dir = path.join(vault, "brain", "notifications");
-  fs.rmSync(dir, { recursive: true, force: true });
-  await s.postComputerNotice("Submit: Click “Pay” on a.test?", "Alpha is waiting for your answer in the Computer pane.\n--json is just text here");
-  const years = fs.readdirSync(dir).filter((d) => /^\d{4}$/.test(d));
-  assert.equal(years.length, 1);
-  const files = fs.readdirSync(path.join(dir, years[0]));
-  assert.equal(files.length, 1);
-  const text = fs.readFileSync(path.join(dir, years[0], files[0]), "utf8");
-  assert.match(text, /^from: "computer"$/m);
-  assert.match(text, /^level: "info"$/m);
-  assert.match(text, /^title: "Submit: Click “Pay” on a\.test\?"$/m);
-  assert.match(text, /Alpha is waiting for your answer in the Computer pane\.\n--json is just text here\n$/);
-});
-
-test("postComputerNotice: a title the runtime would refuse, or no vault, rejects without running anything", async () => {
-  let spawned = 0;
-  const spawnImpl = ((...a: Parameters<typeof childProcess.spawn>) => { spawned++; return childProcess.spawn(...a); }) as unknown as typeof childProcess.spawn;
-  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
-  for (const bad of ["", "  ", "two\nlines", "-flag", "--json", "x".repeat(161)]) {
-    await assert.rejects(s.postComputerNotice(bad, "body"), /title/, JSON.stringify(bad));
-  }
-  assert.equal(spawned, 0);
-  const none = new SessionService({ trash: async () => {}, vaultRoot: () => null, enabled: () => true, computerOn: () => true, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
-  await assert.rejects(none.postComputerNotice("Submit: x?", "body"), /no vault is open/);
-  assert.equal(spawned, 0);
-});
-
-test("postComputerNotice: nothing runs while the Computer surface is off (agent-computer D26)", async () => {
-  let spawned = 0;
-  const spawnImpl = ((...a: Parameters<typeof childProcess.spawn>) => { spawned++; return childProcess.spawn(...a); }) as unknown as typeof childProcess.spawn;
-  let on = false;
-  const s = new SessionService({ trash: async () => {}, vaultRoot: () => vault, enabled: () => true, computerOn: () => on, context: () => context, env, node: () => process.execPath, emit: () => {}, spawnImpl });
-  await assert.rejects(s.postComputerNotice("Submit: x?", "body"), /the Computer surface is off/);
-  assert.equal(spawned, 0);
-  on = true;
-  await s.postComputerNotice("Submit: x?", "body");
-  assert.equal(spawned, 1);
 });
 
 /** A service whose Trash records what it is given (or refuses), and whose removals are counted (session-browser S13, S6). */
