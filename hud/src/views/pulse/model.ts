@@ -98,7 +98,7 @@ export interface PulseModel {
   heartbeat: PersonaHeartbeat | null;
   live: LiveRow[];
   /** What runs in each workspace now, by the rule Spaces' live dot uses (spaces-redesign D26): Code terminals placed
-   *  there, shells included, and Sessions threads mid-turn. Read with `live`, from the same thread list. */
+   *  there, shells included. Read with `live`, from the same terminal list. */
   liveBy: Map<string, LiveState>;
   routineRows: RoutineRow[];
   todos: Todo[];
@@ -256,7 +256,7 @@ function countBackfillable(plugin: AgenticOSPlugin, runs: AgentRun[]): number {
  * The running agents: Code's agent terminals that have not ended (remove-sessions D6: no Sessions threads); and from the
  * same read, what runs in each workspace (liveByWorkspace, spaces-redesign D26).
  */
-async function liveRows(plugin: AgenticOSPlugin): Promise<{ rows: LiveRow[]; byWorkspace: Map<string, LiveState> }> {
+export async function liveRows(plugin: AgenticOSPlugin): Promise<{ rows: LiveRow[]; byWorkspace: Map<string, LiveState> }> {
   const out: LiveRow[] = [];
   const terminals: LiveTerminalInput[] = [];
   try {

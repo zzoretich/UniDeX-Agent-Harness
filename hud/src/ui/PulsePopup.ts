@@ -171,7 +171,7 @@ export class PulsePopup extends Modal {
       case "health": return this.renderHealth(main);
       case "agents": {
         const l = list();
-        for (const x of m.live) this.row(l, { tone: "info", title: x.title, meta: x.sub, tag: "live", acts: [{ label: "Show →", jump: true, run: () => openTab(ctx, x.sub.endsWith("Sessions") ? "chat" : "term") }] });
+        for (const x of m.live) this.row(l, { tone: "info", title: x.title, meta: x.sub, tag: "live", acts: [{ label: "Show →", jump: true, run: () => openTab(ctx, "term") }] });   // every live row is a Code terminal (remove-sessions D6)
         if (m.facts.persona) {
           const beats = Object.entries(m.heartbeat?.beats ?? {}).sort((a, b) => String(b[1].lastRunAt ?? "").localeCompare(String(a[1].lastRunAt ?? "")));
           this.row(l, { tone: beats.some(([, b]) => b.status === "missed" || b.status === "failed") ? "danger" : "ok", title: `${m.facts.persona} — Chief of Staff`, meta: beats.slice(0, 4).map(([s, b]) => `${s} ${b.status}${b.lastRunAt ? ` ${formatRelative(b.lastRunAt)}` : ""}`).join(" · ") || "no duty has run yet" });
