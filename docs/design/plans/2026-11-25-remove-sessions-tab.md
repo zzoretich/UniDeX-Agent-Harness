@@ -16,7 +16,7 @@
 - Zero new runtime dependencies. Runtime and `cli`: Node ≥ 20, CommonJS, `node:test` + `node:assert/strict`. Every hook exits 0 with empty stdout on failure.
 - Tests run through `npm test`, `npm test -w hud`, `cd hud && node --require ../tools/test-env.js --import tsx --test <file>`, or `node --require ./tools/test-env.js --test <file>`. Never a bare `node --test` (it writes into the real vault).
 - No absolute home paths, real names or email addresses in code, tests, docs or commit messages; `npm run gate -- --require-private` stays clean.
-- Commits: author `zzoretich` with the noreply address (the checkout's local config). The message ends with only `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. No `Claude-Session:` line, no session URL, no `--no-verify`.
+- Commits: author `zzoretich` with the noreply address (the checkout's local config). The message ends with only `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. No session-trailer line, no session URL, no `--no-verify`.
 - `plugin/` and `codex-plugin/` do not change; `npm run build:codex-plugin && git status --short codex-plugin` prints nothing.
 - Kept on purpose (D9, D10, D12): `settings.sessionChoice` and `rememberSessionChoice`; `ThreadView`, `HostModelMenu`, `SlashMenu`, `agentSessions`, `sessionHistory`, `historyCache`, `hostSessions`, `pastChat`, `LiveRunsWatcher`; the ~31 `.aos-ss-*` classes ThreadView, CodeChat and CodePanes draw and `@keyframes aos-ss-spin` / `aos-ss-blink`; `HOOK_EXCLUDE` (`spend-ledger.js`), `isHookFeature` (`cli/aos.js`) and `statusline-model.js` excluding `session:*` rows.
 - Old thread files under `brain/_index/sessions/` are never deleted or moved by anything new (D7).
