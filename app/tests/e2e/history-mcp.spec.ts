@@ -1,10 +1,10 @@
-// Sessions ▸ History and the MCP server copy (install-import B11, B6; Copy to … in a Connectors sheet since
+// Code ▸ History (remove-sessions D3; was Sessions ▸ History) and the MCP server copy (install-import B11, B6; Copy to … in a Connectors sheet since
 // connectors-tab D20), on the fixture as it is (Claude Code on but not signed in, Codex off), on a Codex-only machine, on
 // a machine with no host, and with both hosts and the MCP servers surface on. History reads the scan's session index and
 // the digests the fixture writes (the import-digest routine's output); Resume types the host's resume line into a Code
 // terminal, whose `claude` and `codex` are the fixture's echo stubs. Copy to … runs the vault's own `aos mcp copy`
 // through the app's policy against stand-in `claude` and `codex` CLIs that log their argv and write the entry the way the
-// real ones do (app-smoke: Sessions ▸ History, Connectors). The copy refused without the surface is connectors.spec.ts's.
+// real ones do (app-smoke: Code ▸ History, Connectors). The copy refused without the surface is connectors.spec.ts's.
 
 import { expect, test, type Page } from "@playwright/test";
 import * as fs from "node:fs";
@@ -19,8 +19,15 @@ const editJson = (file: string, fn: (j: Record<string, any>) => void) => {
 const AGENTICOS = path.join(FX.claude, "agenticos.json");
 const PROVIDER_STATE = () => FX.v("brain/_index/provider-state.json");
 
-const history = (win: Page) => content(win).locator(".aos-ss-history");
-const hrow = (win: Page, title: string) => history(win).locator(".aos-ss-hrow", { hasText: title });
+const history = (win: Page) => content(win).locator(".aos-ch");
+const hrow = (win: Page, title: string) => history(win).locator(".aos-ch-row", { hasText: title });
+/** Code ▸ History through the sidebar's All history (remove-sessions D3): no tab change once Code shows. */
+async function openHistory(win: Page): Promise<void> {
+  await openTab(win, "term");
+  await content(win).locator("button.aos-tl-allhistory").click();
+  await expect(history(win)).toBeVisible();
+  await expect(content(win).locator("button.aos-tl-allhistory")).toHaveAttribute("aria-pressed", "true");
+}
 /** A server's card on the Connectors board, and the host rows of the sheet it opens. */
 const serverCard = (win: Page, name: string) => content(win).locator(`[data-conn="s:${name}"]`).first();
 const sheetHost = (win: Page, host: string) => content(win).locator(`aside.aos-con-sheet .aos-con-hostrow[data-host="${host}"]`);
@@ -33,52 +40,62 @@ test.describe("the fixture: Claude Code on but not signed in, Codex off", () => 
   // The fixture's Connectors check dated now: opening Connectors starts no check of its own.
   const app = useApp({ prepare: freshConnectorsCheck });
 
-  test("Sessions is on the rail for History and opens there: past sessions by day with the digest's line; Resume on Claude Code's rows, none on Codex's (B11)", async () => {
+  test("All history opens Code ▸ History: past sessions by day with the digest's line; Resume on Claude Code's rows, none on Codex's; Resume closes it (remove-sessions D3, B11)", async () => {
     const h = app();
     const { win } = h;
-    await expect(rail(win, "chat")).toHaveCount(1);
-    await openTab(win, "chat");
-    await expect(content(win).locator('.aos-ss-row[data-thread="history"]')).toHaveClass(/is-selected/);
-    await expect(content(win).locator(".aos-ss-hnohost")).toHaveText("No host is signed in: Sessions shows the history on this Mac. Sign in to Claude Code or Codex to start a session.");
+    await openHistory(win);
+    await expect(rail(win, "term")).toHaveClass(/is-active/);
+    // Claude Code is on, its login never checked: a terminal may try it, so no "no host" note.
+    await expect(history(win).locator(".aos-ch-nohost")).toBeHidden();
     const x = expected().history.digests;
-    await expect(content(win).locator(".aos-ss-hcount")).toHaveText(/^\d+ past sessions · Claude Code \d+ · Codex \d+ · 2 summarised$/);
-    await expect(history(win).locator(".aos-ss-hdayname").first()).toHaveText(/^(Today|Yesterday)$/);   // three hours ago
+    await expect(history(win).locator(".aos-ch-count")).toHaveText(/^\d+ past sessions · Claude Code \d+ · Codex \d+ · 2 summarised$/);
+    await expect(history(win).locator(".aos-ch-dayname").first()).toHaveText(/^(Today|Yesterday)$/);   // three hours ago
     // Newest first: the Claude Code session in harbor-map, its digest's line under it.
-    const first = history(win).locator(".aos-ss-hrow").first();
-    await expect(first.locator(".aos-ss-htitle")).toHaveText(CLAUDE_ROW);
-    await expect(first.locator(".aos-ss-hmeta")).toHaveText(/^\d{2}:\d{2} · Claude Code · harbor-map$/);
-    await expect(first.locator(".aos-ss-hsummary")).toHaveText(x.claude.summary);
+    const first = history(win).locator(".aos-ch-row").first();
+    await expect(first.locator(".aos-ch-title")).toHaveText(CLAUDE_ROW);
+    await expect(first.locator(".aos-ch-meta")).toHaveText(/^\d{2}:\d{2} · Claude Code · harbor-map$/);
+    await expect(first.locator(".aos-ch-summary")).toHaveText(x.claude.summary);
     await expect(first).toHaveAttribute("data-host", "claude");
-    // Claude Code is on (its login never checked, so a terminal may try it, as Spaces' Resume does); Codex is off: its
-    // rows have no Resume.
-    await expect(first.locator("button.aos-ss-hresume")).toBeEnabled();
-    await expect(first.locator("button.aos-ss-hresume")).toHaveAttribute("title", "Resumes in workspaces/harbor-map");
-    await expect(hrow(win, CODEX_ROW).locator(".aos-ss-hsummary")).toHaveText(x.codex.summary);
-    await expect(hrow(win, CODEX_ROW).locator("button.aos-ss-hresume")).toHaveCount(0);
-    await expect(history(win).locator('.aos-ss-hrow[data-host="codex"] button.aos-ss-hresume')).toHaveCount(0);
+    // Claude Code is on; Codex is off: its rows have no Resume.
+    await expect(first.locator("button.aos-ch-resume")).toBeEnabled();
+    await expect(first.locator("button.aos-ch-resume")).toHaveAttribute("title", "Resumes in workspaces/harbor-map");
+    await expect(hrow(win, CODEX_ROW).locator(".aos-ch-summary")).toHaveText(x.codex.summary);
+    await expect(history(win).locator('.aos-ch-row[data-host="codex"] button.aos-ch-resume')).toHaveCount(0);
     // A rollout outside every workspace shows its folder; a headless `codex exec` run and a subagent are not History.
-    await expect(history(win).locator(".aos-ss-hrow", { hasText: "~/sketches" })).toHaveCount(1);
+    await expect(history(win).locator(".aos-ch-row", { hasText: "~/sketches" })).toHaveCount(1);
     await expect(history(win)).not.toContainText("List the chart tiles missing a zoom level");
     await expect(history(win)).not.toContainText("Find where the chart view draws its layers");
-    // Resume types `claude --resume <id>` into a Code terminal in the workspace.
-    await first.locator("button.aos-ss-hresume").click();
-    await expect(rail(win, "term")).toHaveClass(/is-active/);
+    // Resume types `claude --resume <id>` into a Code terminal in the workspace, and History gives way to it.
+    await first.locator("button.aos-ch-resume").click();
+    await expect(history(win)).toBeHidden();
+    await expect(content(win).locator("button.aos-tl-allhistory")).not.toHaveAttribute("aria-pressed", "true");
     await expect.poll(() => terminalText(win), { timeout: 10_000 }).toMatch(new RegExp(`\\[fixture claude stub\\] .*--resume ${x.claude.id}`));
     expectNoErrors(h);
   });
 
+  test("a terminal picked in the sidebar closes History, and so does Close (remove-sessions D3)", async () => {
+    const { win } = app();
+    await openHistory(win);
+    // The terminal the Resume above started is in the list.
+    await content(win).locator(".aos-tl-row").first().click();
+    await expect(history(win)).toBeHidden();
+    await openHistory(win);
+    await history(win).locator("button.aos-ch-close").click();
+    await expect(history(win)).toBeHidden();
+  });
+
   test("the filter narrows History by any word, keeps its focus, and says when nothing matches", async () => {
     const { win } = app();
-    await openTab(win, "chat");
-    const filter = history(win).locator("input.aos-ss-hfilter");
+    await openHistory(win);
+    const filter = history(win).locator("input.aos-ch-filter");
     await filter.fill("contours");
-    await expect(history(win).locator(".aos-ss-hrow")).toHaveCount(1);
-    await expect(history(win).locator(".aos-ss-htitle")).toHaveText(CODEX_ROW);
+    await expect(history(win).locator(".aos-ch-row")).toHaveCount(1);
+    await expect(history(win).locator(".aos-ch-title")).toHaveText(CODEX_ROW);
     await expect(filter).toBeFocused();
     await filter.fill("nothing like this");
-    await expect(history(win).locator(".aos-ss-hempty")).toHaveText("No past session matches the filter.");
+    await expect(history(win).locator(".aos-ch-empty")).toHaveText("No past session matches the filter.");
     await filter.fill("");
-    await expect(history(win).locator(".aos-ss-hrow").first()).toBeVisible();
+    await expect(history(win).locator(".aos-ch-row").first()).toBeVisible();
   });
 
   test("Skills says MCP servers moved and opens Connectors; with Codex off a server's sheet has Claude Code's row only and nothing to copy (B6, connectors-tab D2, D20)", async () => {
@@ -110,16 +127,13 @@ test.describe("a Codex-only machine", () => {
     },
   });
 
-  test("History: Claude Code's rows show without Resume; a Codex row resumes in Code with `codex resume -C <folder> <id>` in its workspace (B11, spaces-redesign D7)", async () => {
+  test("History: Claude Code's rows show without Resume; a Codex row resumes in Code with `codex resume -C <folder> <id>` in its workspace (remove-sessions D3, B11, spaces-redesign D7)", async () => {
     const h = app();
     const { win } = h;
-    await openTab(win, "chat");
-    // A host is signed in: Sessions opens on Vault as before; History is one click away.
-    await expect(content(win).locator('.aos-ss-row[data-thread="vault"]')).toHaveClass(/is-selected/);
-    await content(win).locator('.aos-ss-row[data-thread="history"]').click();
-    await expect(content(win).locator(".aos-ss-hnohost")).toHaveCount(0);
-    await expect(hrow(win, CLAUDE_ROW).locator("button.aos-ss-hresume")).toHaveCount(0);
-    const resume = hrow(win, CODEX_ROW).locator("button.aos-ss-hresume");
+    await openHistory(win);
+    await expect(history(win).locator(".aos-ch-nohost")).toBeHidden();
+    await expect(hrow(win, CLAUDE_ROW).locator("button.aos-ch-resume")).toHaveCount(0);
+    const resume = hrow(win, CODEX_ROW).locator("button.aos-ch-resume");
     await expect(resume).toBeEnabled();
     await expect(resume).toHaveAttribute("title", "Resumes in workspaces/harbor-map");
     await resume.click();
@@ -148,17 +162,44 @@ test.describe("no host on this Mac", () => {
   test("History still lists what is on disk, with no Resume anywhere; Connectors says no host is on and offers nothing (B11 §5.6, B6)", async () => {
     const h = app();
     const { win } = h;
-    await expect(rail(win, "chat")).toHaveCount(1);
-    await openTab(win, "chat");
-    await expect(content(win).locator(".aos-ss-hnohost")).toBeVisible();
+    await openHistory(win);
+    await expect(history(win).locator(".aos-ch-nohost")).toHaveText("No host is signed in: History lists the past sessions on this Mac. Sign in to Claude Code or Codex to resume one.");
     await expect(hrow(win, CLAUDE_ROW)).toHaveCount(1);
     await expect(hrow(win, CODEX_ROW)).toHaveCount(1);
-    await expect(history(win).locator("button.aos-ss-hresume")).toHaveCount(0);
+    await expect(history(win).locator("button.aos-ch-resume")).toHaveCount(0);
     await openTab(win, "connectors");
     await expect(content(win).locator(".aos-con-banner")).toHaveText("No host is on for this vault: Settings ▸ Hosts adds Claude Code or Codex.");
     await expect(content(win).locator(".aos-con-card")).toHaveCount(0);
     await expect(content(win).locator("button.aos-con-check")).toBeDisabled();
     expectNoErrors(h);
+  });
+});
+
+test.describe("a long history (remove-sessions D3)", () => {
+  /** HISTORY_PAGE + 5 interactive Claude Code sessions a month back, under the fixture's own. */
+  const EXTRA = 105;
+  const app = useApp({
+    prepare: () => {
+      freshConnectorsCheck();
+      editJson(FX.v("brain/_index/session-index.json"), (j) => {
+        const base = Date.now() - 30 * 86_400_000;
+        for (let n = 0; n < EXTRA; n++) {
+          const id = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+          const at = new Date(base + n * 60_000).toISOString();
+          j.files[`/fixture/long/${id}.jsonl`] = { host: "claude", lastAt: at, head: { id, kind: "interactive", title: `Long history session ${n}`, startCwd: null, startedAt: at } };
+        }
+      });
+    },
+  });
+
+  test("History draws HISTORY_PAGE rows at a time; Show more draws the next page", async () => {
+    const { win } = app();
+    await openHistory(win);
+    await expect(history(win).locator(".aos-ch-row")).toHaveCount(100);
+    const more = history(win).locator("button.aos-ch-more");
+    await expect(more).toHaveText(/^Show \d+ more \(\d+ left\)$/);
+    await more.click();
+    await expect.poll(() => history(win).locator(".aos-ch-row").count()).toBeGreaterThan(EXTRA);
   });
 });
 
@@ -199,13 +240,12 @@ test.describe("both hosts, the MCP servers surface on", () => {
 
   test("History: a signed-out host's Resume is off with why, the signed-in host's on (B11, spaces-redesign D31)", async () => {
     const { win } = app();
-    await openTab(win, "chat");
-    await content(win).locator('.aos-ss-row[data-thread="history"]').click();
+    await openHistory(win);
     const claude = hrow(win, CLAUDE_ROW);
-    await expect(claude.locator("button.aos-ss-hresume")).toBeDisabled();
-    await expect(claude.locator("button.aos-ss-hresume")).toHaveAttribute("title", "Claude Code is not logged in");
-    await expect(claude.locator(".aos-ss-hwhy")).toHaveText("Claude Code is not logged in");
-    await expect(hrow(win, CODEX_ROW).locator("button.aos-ss-hresume")).toBeEnabled();
+    await expect(claude.locator("button.aos-ch-resume")).toBeDisabled();
+    await expect(claude.locator("button.aos-ch-resume")).toHaveAttribute("title", "Claude Code is not logged in");
+    await expect(claude.locator(".aos-ch-why")).toHaveText("Claude Code is not logged in");
+    await expect(hrow(win, CODEX_ROW).locator("button.aos-ch-resume")).toBeEnabled();
   });
 
   test("Copy to Codex: the dry run's exact command and file in the confirm, nothing on Cancel; Add backs config.toml up and runs `codex mcp add` with the real values", async () => {

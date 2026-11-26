@@ -1518,12 +1518,17 @@ test.describe("the Code sidebar lists recent conversations (C6)", () => {
     await expect(past(win).locator(".aos-cc-note")).toHaveText("no transcript found", { timeout: 15_000 });
   });
 
-  test("All history opens Sessions on History", async () => {
+  test("All history opens Code ▸ History over the stage; a past conversation picked in the sidebar replaces it (remove-sessions D3)", async () => {
     const { win } = app();
     await openTab(win, "term");
     await C(win).locator(".aos-tl-allhistory").click();
-    await expect(win.locator(".aos-wb-railbtn[data-tab='chat']")).toHaveClass(/is-active/);
-    await expect(C(win).locator(".aos-ss-hresume").first()).toBeVisible({ timeout: 10_000 });
+    await expect(win.locator(".aos-wb-railbtn[data-tab='term']")).toHaveClass(/is-active/);
+    await expect(C(win).locator(".aos-ch")).toBeVisible();
+    await expect(C(win).locator(".aos-ch-resume").first()).toBeVisible({ timeout: 10_000 });
+    await expect(C(win).locator(".aos-term-stage")).toHaveClass(/is-history/);
+    await C(win).locator(".aos-tl-past").first().click();
+    await expect(C(win).locator(".aos-ch")).toBeHidden();
+    await expect(C(win).locator(".aos-term-stage")).not.toHaveClass(/is-history/);
   });
 });
 

@@ -22,15 +22,23 @@ export class TermTab {
     this.panel = new TerminalPanel(this.plugin, {
       resizable: false, fullPane: true, launch: this.view.termActions(), deck: true,
       openWorkspace: (name) => { this.view.open({ tab: "spaces", workspace: name }); },
-      // All history: Sessions ▸ History (install-import B11), as the tour opens it.
-      openHistory: () => { this.view.open({ tab: "chat", pane: "history" }); },
+      // All history: Code ▸ History over the stage (remove-sessions D3); Resume starts the row's host at its place.
+      openHistory: () => { this.panel?.showHistory(); },
+      resumeHistory: async (r) => {
+        if (r.resume.state !== "on") return;
+        await this.view.launchTerminal(r.host, { picked: r.resume.place, resume: { id: r.id }, origin: "History" });
+      },
       // The top bar's Files: the Files tab at the terminal's workspace folder (code-chat C8).
       openFiles: (folder) => { this.view.setTab("files"); (this.view.getTab("files") as FilesTab | null)?.showFolder(folder); },
     });
     this.panel.mount(host);
   }
-  /** Code scoped to a workspace's group (spaces-redesign D12): WorkbenchView.open({tab: "term", workspace}). Select only. */
-  reveal(target: { workspace?: string | null }): void { this.panel?.reveal(target); }
+  /** Code scoped to a workspace's group (spaces-redesign D12): WorkbenchView.open({tab: "term", workspace}); `pane:
+   *  "history"` shows Code ▸ History instead (remove-sessions D3; the tour and old Sessions links route there). Select only. */
+  reveal(target: { workspace?: string | null; pane?: string | null }): void {
+    if (target.pane === "history") { this.panel?.showHistory(); return; }
+    this.panel?.reveal(target);
+  }
   async refresh(): Promise<void> { this.panel?.focus(); this.panel?.refreshSidebar(); this.panel?.enter(); }
   unmount(): void { this.panel?.unmount(); this.panel = null; this.host = null; }
   /** Another tab is shown (WorkbenchView.setTab): the Computer pane lets its view go (agent-computer ruling R51) and the

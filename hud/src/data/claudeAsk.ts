@@ -11,7 +11,7 @@
 // Vault chat's host and model menu (spec 2026-10-07-sessions-ux U9) reads its hosts, its starting choice, the alias
 // list it falls back to and today's reasoner spend from the helpers at the end of this file.
 import * as path from "path";
-import { env, fs, spawn as hostSpawn, utf8, type HostCatalog, type HostCatalogHost, type HostChild, type HostSpawnOptions, type SpawnFn } from "../host";
+import { env, fs, spawn as hostSpawn, utf8, type HostCatalog, type HostChild, type HostSpawnOptions, type SpawnFn } from "../host";
 import { lastStderrLine, type AskHandle, type AskResult } from "./askSpawner";
 import { readAgenticosJson, readProviderState, AgenticosJson, ProviderState, type SessionHost } from "./aosConfig";
 import { EFFORTS, catalogHost, findModel, hostChoices, usdText, type HostChoice, type RememberedChoice } from "./agentSessions";
