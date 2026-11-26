@@ -145,9 +145,6 @@ export class TerminalPanel {
       renderTabs: () => this.renderTabs(),
     }, {
       history: () => this.model.history(),
-      hostReady: () => {
-        try { return this.plugin.termLauncher.choices().some((c) => c.host !== "shell" && !c.hidden && c.ready); } catch { return false; }
-      },
       resume: (r) => void this.resumeHistory(r),
       close: () => this.closeHistory(),
     });
@@ -198,7 +195,12 @@ export class TerminalPanel {
         openPast: (h) => this.stage.showPast({ key: h.key, host: h.host, id: h.id, title: h.title, place: h.place, resume: h.resume }),
         openClosed: (r) => { if (r.sessionId && r.host !== "shell") this.stage.showPast({ key: `closed:${r.host}:${r.sessionId}`, host: r.host, id: r.sessionId, title: r.title, place: r.place, resume: { state: "on", place: r.place, hint: "" } }); },
         showMore: (key) => { this.model.extra[key] = (this.model.extra[key] ?? 0) + 10; this.renderTabs(); },
-        allHistory: this.opts.openHistory ? () => this.opts.openHistory?.() : undefined,
+        // A toggle, as its aria-pressed says: open, the focus goes to History's filter; pressed again, History closes.
+        allHistory: this.opts.openHistory ? () => {
+          if (this.stage.historyShown()) { this.closeHistory(); return; }
+          this.opts.openHistory?.();
+          this.stage.history?.focusFilter();
+        } : undefined,
       }, () => this.renderTabs());
       this.model.start();
       frame = host.createDiv({ cls: "aos-term-main", attr: { "data-tour": "code-main" } });

@@ -84,6 +84,25 @@ test.describe("the fixture: Claude Code on but not signed in, Codex off", () => 
     await expect(history(win)).toBeHidden();
   });
 
+  test("remove-sessions final review: All history is a toggle; opening it puts the focus in the filter; Esc clears a filter, then closes History", async () => {
+    const { win } = app();
+    const all = content(win).locator("button.aos-tl-allhistory");
+    await openHistory(win);
+    await expect(history(win).locator('[role="heading"][aria-level="2"]')).toHaveText("History");
+    const filter = history(win).locator("input.aos-ch-filter");
+    await expect(filter).toBeFocused();
+    await all.click();
+    await expect(history(win)).toBeHidden();
+    await expect(all).toHaveAttribute("aria-pressed", "false");
+    await openHistory(win);
+    await filter.fill("contours");
+    await filter.press("Escape");
+    await expect(filter).toHaveValue("");
+    await expect(history(win)).toBeVisible();
+    await filter.press("Escape");
+    await expect(history(win)).toBeHidden();
+  });
+
   test("the filter narrows History by any word, keeps its focus, and says when nothing matches", async () => {
     const { win } = app();
     await openHistory(win);

@@ -8,10 +8,9 @@ import { HISTORY_PAGE, dayLabel, filterHistory, groupByDay, historyCount, type H
 
 /** What the view needs of the panel that holds it. */
 export interface CodeHistoryHost {
-  /** The rows as the cache has them now, and whether a read has landed (or failed). */
-  history(): { rows: HistoryRow[]; loaded: boolean; error: string | null };
-  /** Whether any agent host is on and ready: without one the view says so (Resume says why on each row). */
-  hostReady(): boolean;
+  /** The rows as the cache has them now, whether a read has landed (or failed), and whether any agent host is on and
+   *  ready (without one the view says so; Resume says why on each row). Cheap: no config is read here. */
+  history(): { rows: HistoryRow[]; loaded: boolean; error: string | null; hostReady: boolean };
   /** Resume `r` in a new Code terminal (its host's resume line at its place). */
   resume(r: HistoryRow): void;
   /** Close: back to the selected terminal. */
@@ -37,7 +36,7 @@ export class CodeHistory {
     const root = stage.createDiv({ cls: "aos-ch is-hidden", attr: { "data-tour": "code-history", role: "region", "aria-label": "History" } });
     this.root = root;
     const head = root.createDiv({ cls: "aos-ch-head" });
-    head.createDiv({ cls: "aos-ch-heading", text: "History" });
+    head.createDiv({ cls: "aos-ch-heading", text: "History", attr: { role: "heading", "aria-level": "2" } });
     const count = head.createSpan({ cls: "aos-ch-count", attr: { "aria-live": "polite" } });
     const close = head.createEl("button", { cls: "aos-ch-close", text: "Close", attr: { type: "button", "aria-label": "Close History" } });
     close.addEventListener("click", () => this.host.close());
@@ -49,6 +48,14 @@ export class CodeHistory {
       attr: { type: "search", placeholder: "Filter by title, summary, workspace or host", "aria-label": "Filter past sessions", "data-focus": "history-filter" },
     });
     filter.addEventListener("input", () => { this.query = filter.value; this.shownRows = HISTORY_PAGE; this.update(); });
+    // Esc clears a filter first, then closes History; it never reaches the terminal under it or the Workbench.
+    root.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (filter.value) { filter.value = ""; this.query = ""; this.shownRows = HISTORY_PAGE; this.update(); return; }
+      this.host.close();
+    });
     const note = col.createDiv({ cls: "aos-ch-note aos-ch-nohost", text: NO_HOST_TEXT });
     this.els = { count, filter, note, list: col.createDiv({ cls: "aos-ch-days" }) };
   }
@@ -62,6 +69,9 @@ export class CodeHistory {
 
   hide(): void { this.root?.addClass("is-hidden"); }
 
+  /** The keyboard goes to the filter (All history's click; a tour or a link that opens History leaves the focus alone). */
+  focusFilter(): void { if (this.shown) this.els?.filter.focus(); }
+
   destroy(): void {
     this.root?.remove();
     this.root = null;
@@ -73,8 +83,7 @@ export class CodeHistory {
   update(): void {
     const el = this.els;
     if (!el || !this.shown) return;
-    const { rows, loaded, error } = this.host.history();
-    const ready = this.host.hostReady();
+    const { rows, loaded, error, hostReady: ready } = this.host.history();
     const d = this.drawn;
     if (d && d.rows === rows && d.loaded === loaded && d.error === error && d.ready === ready && d.query === this.query && d.shown === this.shownRows) return;
     this.drawn = { rows, loaded, error, ready, query: this.query, shown: this.shownRows };

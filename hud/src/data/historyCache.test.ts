@@ -131,3 +131,25 @@ test("remove-sessions D3: error() names a failed read, and clears on the next go
   await until(() => h.cache.error() === null);
   assert.equal(h.cache.error(), null, "the next good read clears it");
 });
+
+test("remove-sessions final I1: hostReady() follows the hosts the last refresh read, and reading it reads nothing more", async () => {
+  const vault = fs.mkdtempSync(nodePath.join(os.tmpdir(), "aos-history-ready-"));
+  fs.mkdirSync(nodePath.join(vault, "brain", "_index"), { recursive: true });
+  setHudHost(createNodeHost());
+  let reads = 0;
+  let ready = false;
+  const cache = new HistoryCache({
+    vault: () => vault,
+    hosts: () => { reads++; return { choices: [{ host: "codex", label: "Codex", hidden: false, ready, reason: ready ? null : "Codex is not logged in", bin: null }], world: { vault, home: os.tmpdir(), workspaces: [], links: {} } }; },
+  }, () => {});
+  assert.equal(cache.hostReady(), false, "nothing read yet");
+  cache.refresh(true);
+  await until(() => cache.loaded());
+  assert.equal(cache.hostReady(), false);
+  const before = reads;
+  for (let n = 0; n < 20; n++) cache.hostReady();
+  assert.equal(reads, before, "a render asking for it reads no config");
+  ready = true;
+  cache.refresh(true);
+  assert.equal(cache.hostReady(), true, "a sign-in shows at the next refresh");
+});

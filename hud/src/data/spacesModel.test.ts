@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  CLAUDE_RESUME_CROSS_FOLDER, HEURISTIC_READ_TEXT, LINKED_EMPTY_TEXT, PICKUP_EMPTY,
+  CLAUDE_RESUME_CROSS_FOLDER, HEURISTIC_READ_TEXT, LINKED_EMPTY_TEXT, OLD_SESSIONS_TEXT, PICKUP_EMPTY,
   formerNames, gitBrief, gitMeta, gitMetaParts, groupOf, hiddenToggleText, historyFor, hostOffText,
   linkedCounts, linkedFor, liveByWorkspace, matchesQuery, namesPath, newSessionRows, overviewFor, pickupFor,
   resumeTarget, spaceList, spaceRow, statusPill, statusWord, workspaceSlug,
@@ -311,11 +311,12 @@ test("resumeTarget: host off is disabled with the aos init fix, also when the ch
   assert.equal(x.kind === "terminal" && x.host, "codex");
 });
 
-test("remove-sessions D5: an app row from an older snapshot resumes nowhere new: disabled with the row's reason", () => {
+test("remove-sessions D5: an app row from an older snapshot (or a runtime not yet upgraded) resumes nowhere new and never says to open Sessions", () => {
   const thread = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeffff0000";
   const s = snap([row(ID1, { kind: "app", via: "app", resumable: false, reason: "A Sessions thread: open it in Sessions", thread })]);
   const t = resumeTarget({ workspace: "site", id: ID1 }, s, choices(), CTX);
-  assert.deepEqual(t, { kind: "disabled", disabled: true, reason: "A Sessions thread: open it in Sessions" });
+  assert.deepEqual(t, { kind: "disabled", disabled: true, reason: OLD_SESSIONS_TEXT });
+  assert.doesNotMatch(OLD_SESSIONS_TEXT, /open it in Sessions/);
   // The collector's rewrite (a plain headless row) resumes in Code when the host allows it.
   const next = snap([row(ID1, { kind: "headless", via: "app", resumable: true, reason: null, thread })]);
   assert.equal(resumeTarget({ workspace: "site", id: ID1 }, next, choices(), CTX).kind, "terminal");

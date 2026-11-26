@@ -316,6 +316,10 @@ export interface ResumeContext {
 
 const off = (reason: string): ResumeTarget => ({ kind: "disabled", disabled: true, reason });
 
+/** An old Sessions row (kind "app"), from a snapshot an older runtime wrote: it ran headless, and the tab it names is gone
+ *  (remove-sessions D5; final review: an app ahead of its runtime keeps receiving such rows until `aos upgrade`). */
+export const OLD_SESSIONS_TEXT = "Ran headless from the old Sessions tab: start a new session in Code";
+
 /** "<Host> is off on this machine: run aos hosts add <h>" (D31; install-import B2: it keeps the other host). */
 export function hostOffText(host: "claude" | "codex"): string {
   return `${TERM_HOST_LABEL[host]} is off on this machine: run aos hosts add ${host}`;
@@ -339,6 +343,7 @@ export function resumeTarget(ref: ResumeRef, snapshot: Pick<Snapshot, "workspace
   if (!entry) return off("This workspace is not in the current scan");
   const row = (entry.sessions?.recent ?? []).find((r) => r && r.id === ref.id) ?? null;
   if (!row) return off("No longer among this workspace's recent sessions");
+  if (row.kind === "app") return off(OLD_SESSIONS_TEXT);
   // A host session id as the scan records it is a lowercase hex UUID (the ThreadId pattern), so it never reads as a flag.
   if (!THREAD_ID_RE.test(row.id)) return off("Not a session id that can be resumed");
   if (!row.resumable) return off(row.reason || "This session cannot be resumed");

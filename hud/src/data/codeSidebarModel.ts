@@ -44,10 +44,11 @@ export class CodeSidebarModel {
     this.lastInputs.clear();
   }
 
-  /** Code ▸ History's rows and whether they have loaded (remove-sessions D3): none before start(). */
-  history(): { rows: HistoryRow[]; loaded: boolean; error: string | null } {
+  /** Code ▸ History's rows, whether they have loaded and whether a host can resume one (remove-sessions D3): none before
+   *  start(). */
+  history(): { rows: HistoryRow[]; loaded: boolean; error: string | null; hostReady: boolean } {
     const h = this.hist;
-    return h ? { rows: h.rows(), loaded: h.loaded(), error: h.error() } : { rows: [], loaded: false, error: null };
+    return h ? { rows: h.rows(), loaded: h.loaded(), error: h.error(), hostReady: h.hostReady() } : { rows: [], loaded: false, error: null, hostReady: false };
   }
 
   /** The past conversations are looked up again; `force` skips the two-second floor. */

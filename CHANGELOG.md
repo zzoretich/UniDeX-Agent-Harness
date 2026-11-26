@@ -15,7 +15,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **In-app commit** (Sessions' Review changes). Commit from a terminal: ask the agent, or run git yourself.
 
 ### Upgrading
-- Your old Sessions threads stay where they were, in `brain/_index/sessions/<workspace>/`; UniDeX no longer reads them. Each one was a real host session, so `claude --resume <id>` or `codex resume <id>` in a terminal still opens it, and Spaces lists them as headless sessions.
+- Your old Sessions threads stay where they were, in `brain/_index/sessions/<workspace>/`; UniDeX no longer reads them. Each one was a headless host session, whose id is on the file's `"kind":"session"` line (the file's own name is the thread's id, not the session's). To pick one up, run `codex resume <session id>` or `claude -p --resume <session id> "<prompt>"` (as Sessions ran it) in that workspace's folder; Spaces lists them as headless runs, and a Codex one resumes from there like any Codex run.
 
 ## [2.8.0] — 2026-11-25
 

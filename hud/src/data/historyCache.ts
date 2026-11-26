@@ -38,6 +38,9 @@ export class HistoryCache {
   /** Whether a read has landed (Code ▸ History's loading line, remove-sessions D3), and why the last one failed. */
   private landed = false;
   private failure: string | null = null;
+  /** Whether an agent host was on and ready at the last look (Code ▸ History's no-host note): read with the rows, so a
+   *  render asking for it reads no config (remove-sessions, final review I1). */
+  private ready = false;
 
   constructor(private readonly src: HistorySources, private readonly onChange: () => void) {}
 
@@ -48,6 +51,9 @@ export class HistoryCache {
 
   /** The last read's failure, or null once a read went through. */
   error(): string | null { return this.failure; }
+
+  /** Whether an agent host (not the shell) was on and ready when the caches were last looked at. */
+  hostReady(): boolean { return this.ready; }
 
   /** Stops the trailing check (the panel closing). */
   dispose(): void { this.clearTrailing(); }
@@ -98,6 +104,7 @@ export class HistoryCache {
     if (!this.data) return;
     let hosts: ReturnType<HistorySources["hosts"]>;
     try { hosts = this.src.hosts(); } catch { hosts = { choices: [], world: { vault: this.src.vault(), home: "", workspaces: [], links: {} } }; }
+    this.ready = hosts.choices.some((c) => c.host !== "shell" && !c.hidden && c.ready);
     const sig = `${this.data.stamp}|${JSON.stringify(hosts.choices)}|${hosts.world.workspaces.join(",")}|${JSON.stringify(hosts.world.links)}`;
     if (sig === this.built) return;
     this.built = sig;
