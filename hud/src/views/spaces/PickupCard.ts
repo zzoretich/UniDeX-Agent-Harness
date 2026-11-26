@@ -31,8 +31,7 @@ export function renderPickup(host: HTMLElement, ctx: SpacesCtx, e: WorkspaceEntr
         // Paths under home read ~/… on screen (Codex's -C folder); the title keeps the full line.
         if (line) hint.createSpan({ cls: "aos-spc-mono", text: `↳ ${typedCommand(line, ctx.home)}`, attr: { title: line.trim() } });
         hint.createSpan({ cls: "aos-spc-hinttext", text: t.hint });
-      } else if (t.kind === "sessions") hint.createSpan({ cls: "aos-spc-hinttext", text: t.hint });
-      else whyLine(hint, t.reason);
+      } else whyLine(hint, t.reason);
     }
   } else empty(last, p.last.empty);
 

@@ -1,15 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  PANES_FOR, entryAbs, entryPlace, listedEntry, moreMenuItems, outsideMenuItems, panesFor, primaryAction, rightPaneKey, sessionsFooter,
-  splitMenuItems, statusMenuItems, targetFor, threadSignature, tilde, typedCommand, watchFlags, type SpacesActions, type SpacesCtx,
+  PANES_FOR, entryAbs, entryPlace, listedEntry, moreMenuItems, outsideMenuItems, panesFor, primaryAction, rightPaneKey,
+  splitMenuItems, statusMenuItems, targetFor, tilde, typedCommand, watchFlags, type SpacesActions, type SpacesCtx,
 } from "./ui";
 import type { OutsideListRow } from "../../data/hostSessions";
-import { SESSIONS_OFF_TEXT, CLI_THREAD_TEXT } from "../../data/spacesModel";
 import { launchLine, type LaunchSpec, type PlaceWorld, type TermHostChoice } from "../../data/terminalLaunch";
 import type { Snapshot, WorkspaceEntry, WorkspaceSessionRow } from "../../data/snapshot";
 import type { DirEntry } from "../../data/workspaceFiles";
-import type { HostSessionThread } from "../../host";
 
 // spaces-redesign PR 2: the parts of the Spaces panes that decide something (what a file event redraws, what Resume
 // and its menu offer per host, D7, D31, D32) are data in ui.ts, so they are pinned here without a DOM.
@@ -50,11 +48,11 @@ function choices(o: { claude?: "on" | "off" | "out"; codex?: "on" | "off" | "out
 }
 
 /** The ctx the pure helpers read, with the calls they make recorded. */
-function ctx(e: WorkspaceEntry, o: { claude?: "on" | "off" | "out"; codex?: "on" | "off" | "out"; sessions?: boolean; links?: Record<string, string>; quick?: "claude" | "codex" | null } = {}) {
+function ctx(e: WorkspaceEntry, o: { claude?: "on" | "off" | "out"; codex?: "on" | "off" | "out"; links?: Record<string, string>; quick?: "claude" | "codex" | null } = {}) {
   const calls: string[] = [];
   const act = new Proxy({}, { get: (_t, k: string) => (...args: unknown[]) => { calls.push(`${k}(${args.map((a) => JSON.stringify(a)).join(",")})`); } }) as SpacesActions;
   const snapshot = { workspaces: [e] } as unknown as Snapshot;
-  const c = { snapshot, entries: [e], choices: choices(o), world: world(o.links), sessionsAvailable: o.sessions ?? true, act, vault: VAULT, quick: o.quick ?? null } as unknown as SpacesCtx;
+  const c = { snapshot, entries: [e], choices: choices(o), world: world(o.links), act, vault: VAULT, quick: o.quick ?? null } as unknown as SpacesCtx;
   return { c, calls };
 }
 
@@ -65,10 +63,9 @@ test("watchFlags: each watched path raises what it changes, and only the selecte
   assert.deepEqual(watchFlags("brain/_index/snapshot.json", o), ["snapshot"]);
   assert.deepEqual(watchFlags("brain/_index/workspace-maps/site.json", o), ["map"]);
   assert.deepEqual(watchFlags("brain/_index/workspace-maps/notes.json", o), [], "another workspace's map");
-  // A thread's file appearing or going is a thread list change; a running turn appending its events is not (they come
-  // through the Sessions events, SpacesTab's TURN_EVENTS), so a modify there raises nothing.
+  // The old Sessions threads raise nothing (remove-sessions D5): nothing in Spaces reads them.
   assert.deepEqual(watchFlags("brain/_index/sessions/x/t.jsonl", o), []);
-  assert.deepEqual(watchFlags("brain/_index/sessions/x/t.jsonl", { ...o, modify: false }), ["threads"]);
+  assert.deepEqual(watchFlags("brain/_index/sessions/x/t.jsonl", { ...o, modify: false }), []);
   assert.deepEqual(watchFlags("workspaces/notes/workspace.md", o), ["world"]);
   assert.deepEqual(watchFlags("TODO.md", o), ["linked"]);
   assert.deepEqual(watchFlags("persona/proposals/2026-10-01-x.md", o), ["linked"]);
@@ -86,7 +83,6 @@ test("watchFlags: each watched path raises what it changes, and only the selecte
 
 test("panesFor: while Files shows the preview, only what the preview shows redraws it (no scroll reset on a turn or a to-do)", () => {
   const files = { previewShown: true, rightChanged: false };
-  assert.deepEqual([...panesFor(["threads"], files)], ["list"]);
   assert.deepEqual([...panesFor(["linked"], files)], ["list"]);
   assert.deepEqual([...panesFor(["tree"], files)], ["centre"], "opening a folder in the tree");
   assert.deepEqual([...panesFor(["world"], files)], ["centre"]);
@@ -95,7 +91,7 @@ test("panesFor: while Files shows the preview, only what the preview shows redra
   assert.deepEqual([...panesFor(["listing"], files)], ["centre"], "a file made or removed beside the previewed one");
   assert.deepEqual([...panesFor(["listing"], { previewShown: true, rightChanged: true })], ["centre", "right"], "the previewed file's own row changed");
   assert.deepEqual([...panesFor(["tree"], { previewShown: true, rightChanged: true })], ["centre", "right"], "Overview → Files swaps the right pane");
-  assert.deepEqual([...panesFor(["threads"], { previewShown: false, rightChanged: false })], ["list", "right"], "History is redrawn as before");
+  assert.deepEqual([...panesFor(["linked"], { previewShown: false, rightChanged: false })], ["list", "right"], "History is redrawn as before");
   assert.deepEqual([...panesFor([], files)], []);
   assert.deepEqual([...panesFor([], { previewShown: true, rightChanged: true })], ["right"]);
 });
@@ -114,14 +110,6 @@ test("rightPaneKey: the preview's key holds the file's own row in the listing, n
   assert.equal(rightPaneKey({ ...ui, centre: "overview" }, listed()), "overview:reef-survey", "History and Linked read no listing");
   assert.equal(listedEntry("top.md", new Map([["", [{ name: "top.md", isDir: false, size: 5 }]]]))?.size, 5, "a file at the workspace's root");
   assert.equal(listedEntry("notes/a.md", new Map([["notes", null]])), undefined, "a folder that could not be listed");
-});
-
-test("threadSignature: the same threads, workspaces and running states read the same in any order", () => {
-  const t = (id: string, workspace: string, running: boolean) => ({ id, workspace, running });
-  assert.equal(threadSignature([t("a", "site", false), t("b", "notes", true)]), threadSignature([t("b", "notes", true), t("a", "site", false)]));
-  assert.notEqual(threadSignature([t("a", "site", false)]), threadSignature([t("a", "site", true)]), "a turn starting");
-  assert.notEqual(threadSignature([t("a", "site", false)]), threadSignature([t("a", "site", false), t("b", "site", false)]), "a new thread");
-  assert.equal(threadSignature([]), "");
 });
 
 // ── places and Resume (D5, D7, D31, D32) ──
@@ -151,14 +139,10 @@ test("primaryAction resumes the last thread in Code; a Codex-only vault's Claude
   assert.equal(notLogged.reason, "Claude Code is not logged in: run its login");
 });
 
-test("primaryAction: an app thread opens in Sessions; no thread yet starts the first ready host; none ready says why", () => {
-  const app = entry("site", { sessions: sessions([row(ID1, { kind: "app", via: "app", thread: THREAD })]) });
-  const s = ctx(app);
-  const a = primaryAction(s.c, app);
-  assert.equal(a.label, "Open in Sessions");
-  a.run!();
-  assert.deepEqual(s.calls, [`openSessions("${THREAD}")`]);
-  assert.equal(primaryAction(ctx(app, { sessions: false }).c, app).reason, SESSIONS_OFF_TEXT);
+test("primaryAction: an old Sessions row is no last thread to resume (remove-sessions D5); no thread yet starts the first ready host; none ready says why", () => {
+  const app = entry("site", { sessions: sessions([row(ID1, { kind: "app", via: "app", thread: THREAD, resumable: false, reason: "A Sessions thread: open it in Sessions" })]) });
+  const a = primaryAction(ctx(app).c, app);
+  assert.equal(a.label, "Start in Code", "it ran headless, so it is not the work to pick up");
 
   const fresh = entry("notes");
   const codexOnly = ctx(fresh, { claude: "off" });
@@ -180,21 +164,20 @@ test("primaryAction: an app thread opens in Sessions; no thread yet starts the f
   assert.deepEqual(outQuick.calls, [`newSession("claude")`], "a quick host that is not ready falls back to the first ready one");
 });
 
-test("splitMenuItems: a row per host that is on, Terminal here, Open last thread in Sessions off for a CLI thread", () => {
+test("splitMenuItems: a row per host that is on and Terminal here; no Sessions row (remove-sessions D5)", () => {
   const e = entry("site", { sessions: sessions([row(ID1)]) });
   const both = splitMenuItems(ctx(e).c, e);
   assert.deepEqual(both.map((i) => [i.label, !!i.disabled, i.detail ?? null]), [
     ["New Claude Code session", false, null],
     ["New Codex session", false, null],
     ["Terminal here", false, null],
-    ["Open last thread in Sessions", true, CLI_THREAD_TEXT],
   ]);
   const codexOnly = splitMenuItems(ctx(e, { claude: "off" }).c, e);
-  assert.deepEqual(codexOnly.map((i) => i.label), ["New Codex session", "Terminal here", "Open last thread in Sessions"], "no row for a host that is off");
+  assert.deepEqual(codexOnly.map((i) => i.label), ["New Codex session", "Terminal here"], "no row for a host that is off");
   const out = splitMenuItems(ctx(e, { codex: "out" }).c, e).find((i) => i.key === "new:codex")!;
   assert.deepEqual([out.disabled, out.detail], [true, "Codex is not logged in: run its login"]);
   const hidden = entry("_archive/old", { hidden: true });
-  assert.ok(splitMenuItems(ctx(hidden).c, hidden).filter((i) => i.key !== "sessions").every((i) => i.disabled && /^Archived/.test(i.detail ?? "")));
+  assert.ok(splitMenuItems(ctx(hidden).c, hidden).every((i) => i.disabled && /^Archived/.test(i.detail ?? "")));
 });
 
 test("moreMenuItems: Rename…, Pin, Set status…, Link code folder…, Draft, Copy path, Reveal, Archive…; Restore… when archived (PR 3)", () => {
@@ -286,13 +269,6 @@ test("outsideMenuItems: Adopt into and Link as code folder of the matching works
   const li = outsideMenuItems(ctx(linked).c, out());
   assert.deepEqual([li[1].disabled, li[1].detail], [true, "Already linked to ~/code/site-repo: change it in More › Link code folder…"]);
   assert.equal(li[0].disabled, false, "adopting it is still fine");
-});
-
-test("sessionsFooter counts this workspace's app threads, is off with the reason when Sessions is hidden", () => {
-  const t = (workspace: string) => ({ id: THREAD, workspace } as HostSessionThread);
-  assert.deepEqual(sessionsFooter([t("site"), t("site"), t("notes")], "site", true), { text: "All 2 in Sessions →", disabled: false, reason: null });
-  assert.equal(sessionsFooter([t("notes")], "site", true), null);
-  assert.deepEqual(sessionsFooter([], "site", false), { text: "Threads in Sessions", disabled: true, reason: SESSIONS_OFF_TEXT });
 });
 
 test("typedCommand shows what a resume line types after exec: the configured binary, and Codex's -C folder (D7)", () => {

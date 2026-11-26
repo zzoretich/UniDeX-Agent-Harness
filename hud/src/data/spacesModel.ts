@@ -176,32 +176,28 @@ export function hiddenToggleText(n: number): string {
 
 // ── live (D26) ──
 
-/** What the HUD sees running in a workspace now: Code terminals placed there and Sessions threads mid-turn. */
-export interface LiveState { terminals: number; threads: number; total: number; title: string }
+/** What the HUD sees running in a workspace now: the Code terminals placed there (remove-sessions D5: no Sessions threads). */
+export interface LiveState { terminals: number; total: number; title: string }
 
-export interface LiveThreadInput { workspace: string; running: boolean }
 export interface LiveTerminalInput { place: Pick<Place, "workspace">; exited: boolean }
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 
 /**
- * The live dot per workspace name (D26): Code terminals whose place names the workspace and have not exited, and
- * Sessions threads whose turn is running. A CLI session started outside the app is not seen; its row shows its age.
+ * The live dot per workspace name (D26): Code terminals whose place names the workspace and have not exited. A CLI
+ * session started outside the app is not seen; its row shows its age.
  */
-export function liveByWorkspace(threads: LiveThreadInput[] | null | undefined, terminals: LiveTerminalInput[] | null | undefined): Map<string, LiveState> {
+export function liveByWorkspace(terminals: LiveTerminalInput[] | null | undefined): Map<string, LiveState> {
   const out = new Map<string, LiveState>();
-  const bump = (name: string | undefined, key: "terminals" | "threads") => {
-    if (!name) return;
-    const s = out.get(name) ?? { terminals: 0, threads: 0, total: 0, title: "" };
-    s[key]++;
+  for (const t of terminals ?? []) {
+    const name = t && !t.exited ? t.place?.workspace : undefined;
+    if (!name) continue;
+    const s = out.get(name) ?? { terminals: 0, total: 0, title: "" };
+    s.terminals++;
     s.total++;
     out.set(name, s);
-  };
-  for (const t of terminals ?? []) if (t && !t.exited) bump(t.place?.workspace, "terminals");
-  for (const t of threads ?? []) if (t && t.running) bump(t.workspace, "threads");
-  for (const s of out.values()) {
-    s.title = `Live: ${[s.terminals ? `${plural(s.terminals, "terminal")} in Code` : "", s.threads ? `${plural(s.threads, "running thread")} in Sessions` : ""].filter(Boolean).join(", ")}`;
   }
+  for (const s of out.values()) s.title = `Live: ${plural(s.terminals, "terminal")} in Code`;
   return out;
 }
 
@@ -309,21 +305,14 @@ export interface ResumeRef { workspace: string; id: string }
 export type ResumeTarget =
   /** Type the resume line into a Code terminal at `place` (its group stays `ws:<name>`, D26). */
   | { kind: "terminal"; disabled: false; host: "claude" | "codex"; id: string; cwd: string; place: Place; hint: string; startFolder: boolean }
-  /** A Sessions thread: open it there (spec §4's table). */
-  | { kind: "sessions"; disabled: false; workspace: string; thread: string; hint: string }
   | { kind: "disabled"; disabled: true; reason: string };
 
 export interface ResumeContext {
   /** Where workspaces and their linked code folders are (TerminalLauncher.world()). */
   world: PlaceWorld;
-  /** Whether the Sessions tab is shown (a model provider is set up): a Sessions thread opens there (D32). Default true. */
-  sessionsAvailable?: boolean;
   /** D7's build check; tests flip it. Default `CLAUDE_RESUME_CROSS_FOLDER.works`. */
   claudeCrossFolder?: boolean;
 }
-
-export const SESSIONS_OFF_TEXT = "Sessions is hidden: set up a model provider to use it";
-export const CLI_THREAD_TEXT = "Started in a terminal: resume it in Code";
 
 const off = (reason: string): ResumeTarget => ({ kind: "disabled", disabled: true, reason });
 
@@ -339,7 +328,7 @@ export function entryByName(snapshot: Pick<Snapshot, "workspaces"> | null | unde
 
 /**
  * Whether and where Resume reopens a session (D7, D31, D32). The id must be in this workspace's `recent` in the current
- * snapshot; a Sessions thread opens in Sessions; otherwise it must be a lowercase UUID, `resumable` (each `false`
+ * snapshot (a row the old Sessions tab ran is a host session like any other, remove-sessions D5); it must be a lowercase UUID, `resumable` (each `false`
  * carries the runtime's reason), and its host on and logged in. The folder: the workspace's place, its linked code
  * folder when it has one, for both hosts (A1 found Claude resumes across folders; with that check off, a Claude row
  * resumes in its start folder, or is disabled when that folder is gone). The returned `place` keeps the workspace, so
@@ -350,12 +339,6 @@ export function resumeTarget(ref: ResumeRef, snapshot: Pick<Snapshot, "workspace
   if (!entry) return off("This workspace is not in the current scan");
   const row = (entry.sessions?.recent ?? []).find((r) => r && r.id === ref.id) ?? null;
   if (!row) return off("No longer among this workspace's recent sessions");
-  if (row.kind === "app") {
-    if (ctx.sessionsAvailable === false) return off(SESSIONS_OFF_TEXT);
-    const thread = typeof row.thread === "string" ? row.thread : "";
-    if (!THREAD_ID_RE.test(thread)) return off("This Sessions thread has no id the page can open");
-    return { kind: "sessions", disabled: false, workspace: entry.name, thread, hint: "Opens in Sessions" };
-  }
   // A host session id as the scan records it is a lowercase hex UUID (the ThreadId pattern), so it never reads as a flag.
   if (!THREAD_ID_RE.test(row.id)) return off("Not a session id that can be resumed");
   if (!row.resumable) return off(row.reason || "This session cannot be resumed");
@@ -401,16 +384,6 @@ export function newSessionRows(choices: TermHostChoice[]): NewSessionRow[] {
   return choices
     .filter((c): c is TermHostChoice & { host: "claude" | "codex" } => (c.host === "claude" || c.host === "codex") && !c.hidden)
     .map((c) => ({ host: c.host, label: `New ${c.label} session`, disabled: !c.ready, reason: c.ready ? null : c.reason ?? `${c.label} is not ready` }));
-}
-
-/** "Open last thread in Sessions" (D32): only for a Sessions thread, and only while Sessions is shown. */
-export function sessionsLink(row: WorkspaceSessionRow | null | undefined, sessionsAvailable: boolean): { disabled: boolean; reason: string | null; thread: string | null } {
-  if (!sessionsAvailable) return { disabled: true, reason: SESSIONS_OFF_TEXT, thread: null };
-  if (!row) return { disabled: true, reason: "No session yet", thread: null };
-  if (row.kind !== "app") return { disabled: true, reason: CLI_THREAD_TEXT, thread: null };
-  // The same check resumeTarget makes on the field before it opens a thread.
-  if (typeof row.thread !== "string" || !THREAD_ID_RE.test(row.thread)) return { disabled: true, reason: "This Sessions thread has no id the page can open", thread: null };
-  return { disabled: false, reason: null, thread: row.thread };
 }
 
 // ── the pick-up card (D6) ──
@@ -461,7 +434,7 @@ export function pickupFor(e: WorkspaceEntry, o: { now?: number; provider?: strin
   const title = s ? (s.title ?? "").trim() || "Untitled session" : null;
   const last = {
     key: "last" as const, text: s ? `${s.host}${sAge ? ` · ${sAge}` : ""} — “${title}”` : null, empty: PICKUP_EMPTY.last,
-    source: s ? (s.kind === "app" ? "a Sessions thread" : null) : null,
+    source: null,
     session: s, host: s?.host ?? null, age: sAge, title, resume: s ? { workspace: e.name, id: s.id } : null,
   };
   const h = e.handoff ?? null;
@@ -986,8 +959,6 @@ export function verbResult<T>(r: Pick<AosJsonResult<T>, "code" | "stdout" | "std
 export type MoveKind = "archive" | "restore" | "rename" | "adopt";
 
 export interface MovePlanInput {
-  /** The app's Sessions threads kept under brain/_index/sessions/<n>/. */
-  threads: number;
   /** Host sessions credited to the workspace (or the folder, for Adopt) in the count window. */
   sessions?: number;
   /** The project notes whose status/ tag flips (flippingNotes). */
@@ -1027,17 +998,14 @@ export interface MovePlan {
  */
 export function movePlan(kind: MoveKind, e: Pick<WorkspaceEntry, "name" | "label">, o: MovePlanInput): MovePlan {
   const n = baseName(e);
-  const threads = Math.max(0, o.threads || 0);
   const sessions = Math.max(0, o.sessions || 0);
   const notes = (o.notes ?? []).map((x) => x.title);
-  const threadsText = plural(threads, "Sessions thread");
   if (kind === "archive") {
     const items = [
       `Moves workspaces/${n} to workspaces/_archive/${n}${o.archiveTaken ? " with today's date added (that name is taken)" : ""}`,
       `Moves its file map to brain/_index/workspace-maps/_archive/`,
       notes.length ? `Marks its project memory archived: status/active becomes status/archived in ${plural(notes.length, "note")}` : "No project note names it by workspace: or slug, so no tag changes",
     ];
-    if (threads) items.push(`Keeps its ${threadsText} listed in Sessions, read-only until Restore`);
     items.push(sessions ? `Keeps its ${plural(sessions, "session")} and its git history attached` : "Keeps its sessions and git history attached");
     return { kind, title: `Archive ${n}?`, confirm: "Archive", from: `workspaces/${n}`, to: `workspaces/_archive/${n}`, items, notes, footnote: "Restore it any time: show archived and _ folders, then More › Restore…", warn: null };
   }
@@ -1048,14 +1016,13 @@ export function movePlan(kind: MoveKind, e: Pick<WorkspaceEntry, "name" | "label
       "Moves its file map back to brain/_index/workspace-maps/",
       notes.length ? `Marks its project memory active again: status/archived becomes status/active in ${plural(notes.length, "note")}` : "No project note names it by workspace: or slug, so no tag changes",
     ];
-    if (threads) items.push(`Its ${threadsText} take${threads === 1 ? "s" : ""} turns again`);
     return { kind, title: `Restore ${n}?`, confirm: "Restore", from: `workspaces/_archive/${n}`, to: `workspaces/${back}`, items, notes, footnote: null, warn: null };
   }
   if (kind === "rename") {
     const to = o.to ?? "";
     const items = [
       `Moves workspaces/${n} to workspaces/${to || "…"}`,
-      threads ? `Moves its file map and its ${threadsText}, and rewrites each thread's workspace to ${to || "the new name"}` : "Moves its file map",
+      "Moves its file map",
       `Records workspaces/${n} under aliases:, so its past sessions, to-dos and notes still count here`,
     ];
     if (o.ownRepo) items.push(`Codex asks once to trust workspaces/${to || "…"}: it is a git repository of its own`);

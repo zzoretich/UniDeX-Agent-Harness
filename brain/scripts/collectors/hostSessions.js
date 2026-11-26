@@ -72,10 +72,9 @@ const TEMP_DIRS = ['/tmp', '/private/tmp', '/var/folders', '/private/var/folders
 
 /** Why a recent row cannot be resumed from the page (spec §4's table). */
 const REASONS = {
-  headless: 'Headless run: open it in Sessions or start a new session',
+  headless: 'Headless run: start a new session in Code',
   archived: 'Archived in Codex',
   team: 'A team seat\'s run: it belongs to its board item, not to a terminal',
-  app: 'A Sessions thread: open it in Sessions',
   noId: 'The transcript names no session id, so it cannot be resumed by id',
   idMismatch: 'Its session id is not the lowercase id in its file name, so resuming by id could open another thread',
 };
@@ -645,10 +644,11 @@ function attachSessions(workspaces, collected, opts = {}) {
   const recentRow = ({ s, via }) => {
     const cwd = abs(s.startCwd) || s.startCwd || null;
     const seat = !!abs(cwd) && insideAny(abs(cwd), worktreesRoots);
-    const kind = via === 'app' ? 'app' : s.team || seat ? 'team' : s.kind;
+    // A session the old Sessions tab ran is the headless host session it was (remove-sessions D5): `via` and `thread` stay
+    // until the attribution goes.
+    const kind = s.team || seat ? 'team' : s.kind;
     let reason = null;
-    if (kind === 'app') reason = REASONS.app;
-    else if (kind === 'team') reason = REASONS.team;
+    if (kind === 'team') reason = REASONS.team;
     else if (s.archived) reason = REASONS.archived;
     else if (s.host === 'claude' && s.kind === 'headless') reason = REASONS.headless;
     // A Codex exec (or mcp) thread resumes by id: `codex resume <id>` takes any recorded session, as

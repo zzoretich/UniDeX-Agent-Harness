@@ -79,7 +79,7 @@ export const SESSION_HOST_LABEL: Record<WorkspaceSessionRow["host"], string> = {
 
 /** How a session came to count for the workspace (D20), in words for a tooltip. */
 export const VIA_TEXT: Record<WorkspaceSessionRow["via"], string> = {
-  app: "A Sessions thread in this workspace",
+  app: "Ran headless from the old Sessions tab, in this workspace",
   team: "A team seat working on this workspace's board item",
   cwd: "Started in this workspace or its code folder",
   worktree: "Started in a worktree of this workspace's repository",
@@ -98,13 +98,13 @@ export interface RecentRow {
   /** When it was last active (else when it started). */
   at: string | null;
   age: string;
-  /** "claude · 40m", with "· headless", "· team seat" or "· Sessions" for those kinds. */
+  /** "claude · 40m", with "· headless" or "· team seat" for those kinds (an old Sessions row reads headless). */
   meta: string;
   via: WorkspaceSessionRow["via"];
   viaText: string;
   resumable: boolean;
   reason: string | null;
-  /** A Sessions thread's id (via app). */
+  /** An old Sessions thread's id (via app), until remove-sessions PR 2 drops it. */
   thread: string | null;
   /** The start folder, ~-shortened, and whether it still exists. */
   cwd: string | null;
@@ -112,7 +112,8 @@ export interface RecentRow {
   startExists: boolean;
 }
 
-const KIND_NOTE: Record<WorkspaceSessionRow["kind"], string> = { interactive: "", headless: " · headless", team: " · team seat", app: " · Sessions" };
+// An old Sessions row ran headless (remove-sessions D5), and reads so until the next scan rewrites its kind.
+const KIND_NOTE: Record<WorkspaceSessionRow["kind"], string> = { interactive: "", headless: " · headless", team: " · team seat", app: " · headless" };
 
 const rowAt = (r: Pick<WorkspaceSessionRow, "lastAt" | "startedAt">): string | null => r.lastAt ?? r.startedAt ?? null;
 const msOf = (iso: string | null): number => { const t = iso ? Date.parse(iso) : NaN; return Number.isNaN(t) ? -Infinity : t; };
@@ -142,13 +143,13 @@ export function recentRows(s: WorkspaceSessions | null | undefined, now: number 
 }
 
 /**
- * The pick-up card's *last* (D6, Mechanics › PR 2): the newest row of kind interactive or app; team and headless runs
- * show only in History. Null when there is none.
+ * The pick-up card's *last* (D6, Mechanics › PR 2): the newest interactive row; team and headless runs (an old Sessions
+ * row among them, remove-sessions D5) show only in History. Null when there is none.
  */
 export function lastThread(s: WorkspaceSessions | null | undefined): WorkspaceSessionRow | null {
   let best: WorkspaceSessionRow | null = null;
   for (const r of (Array.isArray(s?.recent) ? s!.recent : []).filter(validRow)) {
-    if (r.kind !== "interactive" && r.kind !== "app") continue;
+    if (r.kind !== "interactive") continue;
     if (!best || msOf(rowAt(r)) > msOf(rowAt(best))) best = r;
   }
   return best;

@@ -1,9 +1,9 @@
 // HistoryPane.ts — HISTORY in the right pane (spaces-redesign D10): All · Sessions · Commits; sessions with their host
 // dot, title, age and a Resume per thread decided by resumeTarget (D7, D31, D32: off with the reason, which shows);
-// commits with their short hash and subject from the workspace's repo or its linked code folder; "All n in Sessions →".
+// commits with their short hash and subject from the workspace's repo or its linked code folder.
 import type { WorkspaceEntry } from "../../data/snapshot";
 import { HISTORY_FILTERS, historyFor, type HistoryFilter, type HistoryItem } from "../../data/spacesModel";
-import { button, dot, hostDot, sectionHead, segmented, sessionsFooter, targetFor, whyLine, type SpacesCtx } from "./ui";
+import { button, dot, hostDot, sectionHead, segmented, targetFor, whyLine, type SpacesCtx } from "./ui";
 
 const FILTER_TEXT: Record<HistoryFilter, string> = { all: "All", sessions: "Sessions", commits: "Commits" };
 
@@ -27,12 +27,6 @@ export function renderHistory(host: HTMLElement, ctx: SpacesCtx, e: WorkspaceEnt
   if (ctx.ui.history === "commits" && !items.length) {
     list.createEl("p", { cls: "aos-spc-emptyval", text: e.git ? "No commits yet." : "No git here: link a code folder to see its commits." });
   }
-
-  const foot = sessionsFooter(ctx.threads, e.name, ctx.sessionsAvailable);
-  if (foot && !foot.disabled) {
-    const b = button(sec, "aos-spc-linkbtn aos-spc-more", foot.text, { key: "history-sessions", title: "Open this workspace's threads in Sessions" });
-    b.addEventListener("click", () => ctx.act.openSessions(null));
-  }
 }
 
 function renderItem(list: HTMLElement, ctx: SpacesCtx, e: WorkspaceEntry, it: HistoryItem, said: Set<string>): void {
@@ -48,10 +42,9 @@ function renderItem(list: HTMLElement, ctx: SpacesCtx, e: WorkspaceEntry, it: Hi
   if (isTarget) row.createSpan({ cls: "aos-spc-tag aos-spc-targettag", text: "linked" });
   if (!it.resume) return;
   const t = targetFor(ctx, e, it.resume);
-  const label = t.kind === "sessions" ? "Open" : "Resume";
-  const b = button(row, "aos-spc-btn aos-spc-small aos-spc-hresume", label, {
+  const b = button(row, "aos-spc-btn aos-spc-small aos-spc-hresume", "Resume", {
     key: `resume:${it.key}`,
-    label: t.kind === "sessions" ? `Open “${it.title}” in Sessions` : `Resume “${it.title}” in Code`,
+    label: `Resume “${it.title}” in Code`,
     title: t.disabled ? t.reason : t.hint,
     disabled: t.disabled,
   });

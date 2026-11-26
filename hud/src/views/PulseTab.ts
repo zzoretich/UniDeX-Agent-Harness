@@ -65,8 +65,8 @@ export class PulseTab {
     this.popup?.update(this.model);
   }
 
-  /** Whether something runs in a workspace now (spaces-redesign D26): a Code terminal placed there, or a Sessions
-   *  thread mid-turn (the model's liveByWorkspace, the rule Spaces' live dot uses). */
+  /** Whether something runs in a workspace now (spaces-redesign D26): a Code terminal placed there (the model's
+   *  liveByWorkspace, the rule Spaces' live dot uses). */
   isLive(name: string): boolean { return (this.model?.liveBy.get(name)?.total ?? 0) > 0; }
 
   /** What rows and the popup act through. */

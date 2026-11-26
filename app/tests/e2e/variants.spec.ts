@@ -401,13 +401,11 @@ test.describe("a Codex-only machine", () => {
     await expect(go).toBeDisabled();
     await expect(go).toHaveAttribute("title", off);
     await expect(C.locator(".aos-spc-pickval[data-row='last'] .aos-spc-why")).toHaveText(off);
-    // The menu lists only the hosts that are on: Codex's New row, no Claude Code one; Sessions is on (Codex is the
-    // provider), and a thread started in a terminal resumes in Code, not there (D32).
+    // The menu lists only the hosts that are on: Codex's New row, no Claude Code one (remove-sessions D5: no Sessions row).
     await head.locator("button.aos-spc-caret").click();
     const pop = C.locator(".aos-spc-pop");
-    await expect(pop.locator(".aos-spc-poplabel")).toHaveText(["New Codex session", "Terminal here", "Open last thread in Sessions"]);
+    await expect(pop.locator(".aos-spc-poplabel")).toHaveText(["New Codex session", "Terminal here"]);
     await expect(pop.locator(".aos-spc-popitem[data-key='new:codex']")).not.toHaveAttribute("aria-disabled", "true");
-    await expect(pop.locator(".aos-spc-popitem[data-key='sessions'] .aos-spc-popdetail")).toHaveText("Started in a terminal: resume it in Code");
     await win.keyboard.press("Escape");
     await expect(pop).toHaveCount(0);
     // History: the Claude Code thread's Resume is off with the same words; a Codex thread's resumes in the workspace.
@@ -712,7 +710,7 @@ test.describe("both hosts", () => {
     await expect(head.locator(".aos-spc-split button.aos-spc-primary").first()).toBeEnabled();
     await head.locator("button.aos-spc-caret").click();
     const pop = C.locator(".aos-spc-pop");
-    await expect(pop.locator(".aos-spc-poplabel")).toHaveText(["New Claude Code session", "New Codex session", "Terminal here", "Open last thread in Sessions"]);
+    await expect(pop.locator(".aos-spc-poplabel")).toHaveText(["New Claude Code session", "New Codex session", "Terminal here"]);
     for (const key of ["new:claude", "new:codex", "terminal"]) await expect(pop.locator(`.aos-spc-popitem[data-key='${key}']`)).not.toHaveAttribute("aria-disabled", "true");
     await win.keyboard.press("Escape");
     const rows = C.locator(".aos-spc-history .aos-spc-hrow");
@@ -768,7 +766,7 @@ test.describe("both hosts, Codex not logged in", () => {
     await expect(head.locator(".aos-spc-split button.aos-spc-primary").first()).toBeEnabled();   // its last thread is Claude Code's
     await head.locator("button.aos-spc-caret").click();
     const pop = C.locator(".aos-spc-pop");
-    await expect(pop.locator(".aos-spc-poplabel")).toHaveText(["New Claude Code session", "New Codex session", "Terminal here", "Open last thread in Sessions"]);
+    await expect(pop.locator(".aos-spc-poplabel")).toHaveText(["New Claude Code session", "New Codex session", "Terminal here"]);
     await expect(pop.locator(".aos-spc-popitem[data-key='new:claude']")).not.toHaveAttribute("aria-disabled", "true");
     await expect(pop.locator(".aos-spc-popitem[data-key='new:codex']")).toHaveAttribute("aria-disabled", "true");
     await expect(pop.locator(".aos-spc-popitem[data-key='new:codex'] .aos-spc-popdetail")).toHaveText("Codex is not logged in");

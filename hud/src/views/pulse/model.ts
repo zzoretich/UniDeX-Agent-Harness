@@ -23,7 +23,7 @@ import { TERM_HOST_LABEL, placeOf, type PlaceWorld } from "../../data/terminalLa
 import { liveByWorkspace, type LiveState, type LiveTerminalInput } from "../../data/spacesModel";
 import { diskAdapter, memberStatus, pendingGates, readTeams } from "../../data/teams";
 import { IMPORT_STATE_PATH, digestPending, parseImportState, type DigestState } from "../../data/importModel";
-import { env, fs, sessionsHost } from "../../host";
+import { env, fs } from "../../host";
 
 export const BRIEFING_ROUTINE_PATH = "brain/routines/briefing.md";
 
@@ -253,21 +253,12 @@ function countBackfillable(plugin: AgenticOSPlugin, runs: AgentRun[]): number {
 }
 
 /**
- * The running agents: Sessions threads with a turn running, and Term's agent terminals that have not ended; and from
- * the same reads, what runs in each workspace (liveByWorkspace, spaces-redesign D26), so Pulse lists the threads once.
+ * The running agents: Code's agent terminals that have not ended (remove-sessions D6: no Sessions threads); and from the
+ * same read, what runs in each workspace (liveByWorkspace, spaces-redesign D26).
  */
 async function liveRows(plugin: AgenticOSPlugin): Promise<{ rows: LiveRow[]; byWorkspace: Map<string, LiveState> }> {
   const out: LiveRow[] = [];
-  const threads: Array<{ workspace: string; running: boolean }> = [];
   const terminals: LiveTerminalInput[] = [];
-  try {
-    const h = sessionsHost();
-    const r = h ? await h.sessions.list() : null;
-    if (r && r.ok) {
-      for (const t of r.data) threads.push({ workspace: t.workspace, running: t.running });
-      for (const t of r.data.filter((x) => x.running)) out.push({ title: t.title || "Session", sub: `${TERM_HOST_LABEL[t.host] ?? t.host} · ${t.workspace} · Sessions`, host: t.host });
-    }
-  } catch { /* no sessions host (plain Node, tests) */ }
   try {
     let world: PlaceWorld | null = null;
     for (const s of plugin.terminalPool.list()) {
@@ -277,7 +268,7 @@ async function liveRows(plugin: AgenticOSPlugin): Promise<{ rows: LiveRow[]; byW
       out.push({ title: s.getTitle(), sub: `${TERM_HOST_LABEL[s.meta.host]} · ${place} · Code`, host: s.meta.host });
     }
   } catch { /* no terminals */ }
-  return { rows: out, byWorkspace: liveByWorkspace(threads, terminals) };
+  return { rows: out, byWorkspace: liveByWorkspace(terminals) };
 }
 
 export async function loadPulseModel(plugin: AgenticOSPlugin, seenAt: string | null, now: Date = new Date()): Promise<PulseModel> {
