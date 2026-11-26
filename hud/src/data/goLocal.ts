@@ -86,11 +86,11 @@ export const MOVES_LOCAL: readonly string[] = [
   "Session summaries, memory extraction and the wrap at the end of a session",
   "Workspace insights and file maps, embeddings and recall",
   "The Pulse briefing and the knowledge graph's semantic pass",
-  "Merge with AI, the Brain sweep, Ask brain, the weekly reflection, Consolidate and Vault chat (each can switch back in Settings)",
+  "Merge with AI, the Brain sweep, Ask brain, the weekly reflection and Consolidate (each can switch back in Settings)",
 ];
 export function staysHosted(hosts: readonly SessionHost[]): string[] {
   return [
-    `Sessions, the Code tab's agents, cross-review and agent teams, on ${hostedName(hosts)}`,
+    `The Code tab's agents, cross-review and agent teams, on ${hostedName(hosts)}`,
     "Your Chief of Staff's duties (the hourly check triages on this Mac first and wakes it only for a real change)",
   ];
 }

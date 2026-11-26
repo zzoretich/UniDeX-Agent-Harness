@@ -100,7 +100,7 @@ export function renderPluginSettings(containerEl: HTMLElement, plugin: AgenticOS
 
   picker(new Setting(containerEl)
     .setName("Poll interval")
-    .setDesc("How often the local watcher polls brain/_index/agent-runs/ for new run events. Consumed by LiveRunsWatcher, rebuilt immediately via Plugin.rebindLiveSources(); its events feed ChatTab's live tail."),
+    .setDesc("How often the local watcher polls brain/_index/agent-runs/ for new run events. Consumed by LiveRunsWatcher, rebuilt immediately via Plugin.rebindLiveSources(); its events feed the heartbeat."),
   "liveTailPollMs", (v) => save("liveTailPollMs", v, () => plugin.rebindLiveSources()));
 
   new Setting(containerEl).setName("Paths").setHeading();

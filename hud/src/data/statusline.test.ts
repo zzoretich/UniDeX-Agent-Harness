@@ -142,3 +142,11 @@ test("THREAD_ID_RE is the app's ThreadId (app/src/main/ipc/schemas.ts)", () => {
   assert.ok(m, "schemas.ts declares ThreadId as z.string().regex(/…/)");
   assert.equal(THREAD_ID_RE.source, new RegExp(m[1]).source);
 });
+
+test("remove-sessions D4: a link to Code, or to Sessions' old id, may name pane=history (Code ▸ History); no other pane, and no thread", () => {
+  const ids = ["term", "chat", "spaces"];
+  assert.deepEqual(workbenchLinkFrom({ tab: "term", pane: "history" }, ids, []), { tab: "term", pane: "history" });
+  assert.deepEqual(workbenchLinkFrom({ tab: "chat", pane: "history", thread: "12345678-1234-4234-8234-123456789abc" }, ids, []), { tab: "chat", pane: "history" });
+  assert.deepEqual(workbenchLinkFrom({ tab: "term", pane: "files" }, ids, []), { tab: "term" });
+  assert.deepEqual(workbenchLinkFrom({ tab: "chat", thread: "12345678-1234-4234-8234-123456789abc" }, ids, []), { tab: "chat" });
+});

@@ -208,7 +208,7 @@ function fakeClock() {
   return c;
 }
 
-function setup(o: { page?: "code" | "chat"; answer?: (session: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent"; startPage?: string; column?: number; pane?: number; changed?: () => void } = {}) {
+function setup(o: { page?: "code"; answer?: (session: string) => HostComputerState | null; settings?: ComputerPaneSettings; enabled?: boolean | "absent"; startPage?: string; column?: number; pane?: number; changed?: () => void } = {}) {
   const doc = makeDoc();
   const parent = doc.body.createDiv({ cls: "aos-term-deck" });
   // The row is the session's column and the pane together: 760 + 440 = 1200 unless a test says otherwise.
@@ -271,19 +271,17 @@ test("follow() selects the session and gives the view its rectangle; collapsing 
 });
 
 test("the pane follows a session and shows the reason when there is none", async () => {
-  const s = setup({ page: "chat" });
-  s.pane.follow(null, "Send the first message to give this session its browser.");
+  const s = setup();
+  s.pane.follow(null, "A past conversation has no browser.");
   await flush();
   assert.equal(last(s.f.selects), null);
-  assert.match(s.view.textContent, /Send the first message to give this session its browser\./);
-  s.pane.follow(null, "Vault chat and History have no browser.");
-  assert.match(s.view.textContent, /Vault chat and History have no browser\./);
-  s.pane.follow({ session: "chat:0b9d6c1e-3f2a-4c7b-9e1d-5a6b7c8d9e0f", label: "Fix the parser" });
+  assert.match(s.view.textContent, /A past conversation has no browser\./);
+  s.pane.follow({ session: "code:t8", label: "Fix the parser" });
   await flush();
-  assert.deepEqual(s.f.selects.at(-1), "chat:0b9d6c1e-3f2a-4c7b-9e1d-5a6b7c8d9e0f");
+  assert.deepEqual(s.f.selects.at(-1), "code:t8");
   assert.equal(s.q(".aos-cp-place").textContent, "Fix the parser");
   s.pane.follow(null);
-  assert.match(s.view.textContent, /Open a session to see its browser/, "no reason given: the page's default");
+  assert.match(s.view.textContent, /Select a terminal to see its browser/, "no reason given: the page's default");
 });
 
 test("a past conversation on Code lets the terminal's browser go and says it has none (session-browser S1)", async () => {
@@ -493,7 +491,7 @@ test("the surface off: the pane is only its collapsed strip, saying so, and that
 });
 
 test("the surface off for the run: the strip with nothing followed too, and main is asked nothing (R54); a host that does not say is off", async () => {
-  for (const [page, enabled] of [["code", false], ["chat", false], ["code", "absent"], ["chat", "absent"]] as const) {
+  for (const [page, enabled] of [["code", false], ["code", "absent"]] as const) {
     const s = setup({ page, enabled, settings: { width: 520, collapsed: false } });
     assert.ok(s.root.classes.has("is-collapsed") && s.root.classes.has("is-off"), `${page}: the strip before the page follows anything`);
     s.pane.follow(null);
@@ -834,17 +832,13 @@ test("with another start page from the host (the e2e suite's fixture), a new tab
   assert.deepEqual(s.f.navs, ["http://search.test:4100/?q=tide%20times"]);
 });
 
-test("the Code page keeps an activity log (D35); the Chat page has none (its thread shows the lines)", async () => {
+test("the Code page keeps an activity log (D35), and its help names the tools that act without these guards (D29)", async () => {
   const code = setup({ page: "code" });
   code.pane.follow({ session: "code:t5", label: "harbor-map" });
   await flush();
   code.f.emit({ type: "state", state: state("code:t5", { log: [{ at: Date.UTC(2026, 10, 8, 9, 30), session: "Claude Code in harbor-map", text: "Clicked “Continue”" }] }) });
   assert.match(code.q(".aos-cp-log").textContent, /Claude Code in harbor-map.*Clicked “Continue”/);
-  const chat = setup({ page: "chat" });
-  chat.pane.follow({ session: "code:t5", label: "harbor-map" });
-  await flush();
-  assert.equal(chat.root.querySelector(".aos-cp-log"), null);
-  assert.match(chat.q(".aos-cp-foot").textContent, /Claude in Chrome/, "the help says which tools act without these guards (D29)");
+  assert.match(code.q(".aos-cp-foot").textContent, /Claude in Chrome/);
 });
 
 test("a modal or the tour over the page takes the view away until it goes", async () => {
@@ -1016,7 +1010,7 @@ test("the trust pill keeps its full text as its title", async () => {
 
 test("a sleeping browser (power asleep) lists its tabs like an awake one (session-browser S9)", async () => {
   const s = setup({ answer: (session) => state(session, { power: "asleep" }) });
-  s.pane.follow({ session: "chat:a", label: "a" });
+  s.pane.follow({ session: "code:a", label: "a" });
   await flush();
   const tabs = s.root.querySelectorAll(".aos-cp-tab");
   assert.equal(tabs.length, 1);

@@ -423,7 +423,6 @@ body {
   gap: 8px;
 }
 
-
 .aos-sb-head {
   display: flex;
   justify-content: space-between;
@@ -645,13 +644,6 @@ body {
 .aos-deck-btn-clipboard { color: var(--aos-dim); }
 
 /* ── CORTEX GRAPH ──────────────────────────────────────────────────────── */
-
-.aos-cortex {
-  padding: 12px 12px 0;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
 
 .aos-cortex-header {
   display: flex;
@@ -1010,135 +1002,6 @@ body {
 .aos-inv-row-clickable:hover { background: var(--udx-raised); }
 .aos-inv-name { color: var(--aos-text); flex: 1; }
 
-/* ── ASSISTANT ─────────────────────────────────────────────────────────── */
-
-.aos-assistant {
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-.aos-asst-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--aos-border);
-  margin-bottom: 8px;
-}
-.aos-asst-log {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding-right: 4px;
-}
-.aos-asst-turn { display: flex; flex-direction: column; gap: 2px; }
-.aos-asst-turn-user .aos-asst-body {
-  background: var(--udx-raised);
-  border-left: 2px solid var(--aos-cyan);
-}
-.aos-asst-turn-assistant .aos-asst-body {
-  background: var(--aos-panel);
-  border: 1px solid var(--aos-border);
-}
-.aos-asst-label { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
-.aos-asst-body {
-  padding: 8px 10px;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.aos-asst-body h1, .aos-asst-body h2, .aos-asst-body h3 {
-  color: var(--aos-cyan);
-  font-size: 12.5px;
-  margin: 4px 0 2px;
-}
-.aos-asst-body code {
-  background: var(--udx-raised-2);
-  color: var(--aos-cyan);
-  padding: 1px 4px;
-  border-radius: 2px;
-  font-size: 11px;
-}
-.aos-asst-meta {
-  font-size: 10px;
-  align-self: flex-end;
-  margin-top: 2px;
-}
-.aos-asst-composer {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--aos-border);
-}
-.aos-asst-input {
-  width: 100%;
-  background: var(--aos-bg);
-  border: 1px solid var(--aos-border);
-  color: var(--aos-text);
-  font-family: var(--aos-mono);
-  font-size: 12px;
-  padding: 6px 8px;
-  resize: vertical;
-}
-.aos-asst-input:focus { border-color: var(--aos-cyan); outline: none; }
-.aos-asst-input:disabled { opacity: 0.5; }
-.aos-asst-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
-
-/* live in-flight turn */
-.aos-asst-live .aos-asst-body { display: none; }
-.aos-asst-mode { font-size: 10px; margin-left: 6px; }
-.aos-asst-run-meta { font-size: 10px; letter-spacing: 0.5px; padding: 2px 0; }
-.aos-asst-timeline-wrap {
-  background: var(--aos-panel);
-  border: 1px solid var(--aos-border);
-  padding: 4px 8px;
-  font-size: 11px;
-}
-.aos-asst-timeline-summary { padding: 2px 0; }
-.aos-asst-timeline {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 4px;
-  padding-top: 4px;
-  border-top: 1px dashed var(--aos-border);
-  max-height: 240px;
-  overflow-y: auto;
-}
-.aos-asst-timeline-row {
-  display: flex;
-  gap: 8px;
-  font-family: var(--aos-mono);
-}
-.aos-asst-timeline-time { flex-shrink: 0; min-width: 60px; }
-.aos-asst-timeline-msg { word-break: break-word; }
-.aos-asst-partial {
-  margin-top: 6px;
-  padding: 6px 8px;
-  background: var(--aos-panel);
-  border-left: 2px solid var(--aos-cyan);
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  min-height: 1em;
-}
-.aos-asst-partial:empty { display: none; }
-.aos-asst-live-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
-.aos-asst-cancel {
-  background: transparent;
-  border: 1px solid var(--aos-border);
-  color: var(--aos-amber);
-  font-family: var(--aos-mono);
-  font-size: 11px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-.aos-asst-cancel:hover { background: var(--udx-warn-bg); }
-
 /* ── STATUS BAR ────────────────────────────────────────────────────────── */
 
 .aos-statusbar {
@@ -1303,7 +1166,6 @@ body {
   padding: 6px 10px;
   white-space: pre-wrap;
 }
-
 
 /* xterm inside the panel: nudge sizing so cursor + scrollbar fit nicely */
 .aos-term .xterm {
@@ -1642,8 +1504,6 @@ body {
     position: relative;
 }
 
-
-
 /* Derived from vs/base/browser/ui/scrollbar/media/scrollbar.css */
 
 /* xterm.js customization: Override xterm's cursor style */
@@ -1781,9 +1641,6 @@ body {
 }
 .aos-omni-label { font-family: var(--aos-mono); font-size: 13px; }
 .aos-omni-hint { margin-left: 8px; font-size: 11px; }
-
-/* Task 8: the Chat tab's "no provider" hint (rendered instead of the composer) */
-.aos-asst-nohint { padding: 16px; display: flex; flex-direction: column; gap: 8px; }
 
 /* Task 12: folder-atlas scope tag in the DISK legend (config = Claude config dir, vault = the vault).
    .aos-disk-name is flex: 0 1 auto (it must not grow: flex-grow would swallow the free space before
@@ -2517,36 +2374,6 @@ mark.aos-fx-qlat { color: inherit; }
 .aos-deck-btn, .aos-term-btn, .aos-ws-action, .aos-rt-btn, .aos-td-prio-btn { border-radius: 8px; }
 .aos-term { border-left: 1px solid var(--udx-line); border-radius: 12px; overflow: hidden; }
 
-/* Chat, composer first (UniDeX D5): one column, user turns as bubbles, the brain's answers as text, the run's steps
-   as quiet rows, and the composer a rounded box at the foot (the log above it scrolls on its own). */
-.aos-wb-content > .aos-assistant { padding: 0; max-width: 820px; margin: 0 auto; box-sizing: border-box; }
-.aos-asst-head { display: flex; align-items: center; gap: 10px; padding: 4px 0 12px; border-bottom: none; }
-.aos-asst-mode { font-size: 12px; margin-left: 0; color: var(--udx-text-3); }
-.aos-asst-log { flex: 1; gap: 20px; padding: 8px 0 16px; border: none; background: none; }
-.aos-asst-turn { gap: 4px; }
-.aos-asst-label { font-family: var(--udx-sans); font-size: 11.5px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--udx-text-3); }
-.aos-asst-turn-user { align-items: flex-end; }
-.aos-asst-turn-user .aos-asst-label { display: none; }
-.aos-asst-turn-user .aos-asst-body { max-width: 78%; padding: 9px 14px; border: none; border-radius: 18px; background: var(--udx-raised); font-size: 14.5px; }
-.aos-asst-turn-assistant .aos-asst-body { padding: 0; border: none; background: none; font-size: 14.5px; line-height: 1.65; }
-.aos-asst-body h1, .aos-asst-body h2, .aos-asst-body h3 { color: var(--udx-text); letter-spacing: 0; }
-.aos-asst-body code { color: var(--udx-text); background: var(--udx-raised); border-radius: 6px; padding: 1px 5px; }
-.aos-asst-meta { font-family: var(--udx-mono); font-size: 11px; color: var(--udx-text-3); }
-.aos-asst-run-meta { font-family: var(--udx-mono); font-size: 11px; letter-spacing: 0; }
-.aos-asst-timeline-wrap { border: 1px solid var(--udx-line); border-radius: 12px; padding: 8px 12px; background: var(--udx-bg); }
-.aos-asst-timeline { border: none; background: none; font-family: var(--udx-mono); font-size: 12px; }
-.aos-asst-timeline-row { padding: 3px 0; }
-.aos-asst-timeline-time { color: var(--udx-text-3); }
-.aos-asst-partial { border-left: none; padding: 0; font-size: 14.5px; line-height: 1.65; }
-.aos-asst-composer {
-  margin-top: 8px; padding: 12px 12px 10px 16px; border: 1px solid var(--udx-line-2);
-  border-radius: 16px; background: var(--udx-bg); box-shadow: var(--udx-shadow);
-}
-.aos-asst-input { border: none; background: transparent; padding: 0; font-family: var(--udx-sans); font-size: 14.5px; resize: none; }
-.aos-asst-input:focus { border: none; }
-.aos-asst-actions { margin-top: 8px; }
-.aos-asst-actions .mod-cta { border-radius: 999px; padding: 6px 14px; }
-
 /* A list and its reading pane (UniDeX D4): the list on the left, the selected item on the right; stacked when narrow. */
 .aos-split { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
 .aos-split-list { flex: 1 1 340px; max-width: 480px; min-width: 0; }
@@ -2563,13 +2390,10 @@ mark.aos-fx-qlat { color: inherit; }
 .aos-nt-reader .aos-nt-actions { justify-content: flex-start; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
 .aos-pr-reader .aos-pr-detail { margin: 0; padding: 0; border: none; background: none; font-size: 14px; line-height: 1.6; }
 
-/* ══ UniDeX sessions: the Claude Code-style tab, its menus and Vault's picker (spec 2026-10-07-sessions-ux) ═══════════
-   The Sessions tab (U1): the list (New session, Vault, each workspace folder with its threads, the day's spend) on the
-   left; the reader fills the rest, as Claude Code shows a session: a bar with the thread, its branch, Review changes and
-   Stop, one centred column for the conversation, the composer and its status line. The composer's menus: host and model
-   (U2, U6, U9), access (U7) and `/` (U8). Vault chat keeps its own composer, with the same chips (U9). Colours come only
-   from the tokens, so both themes follow body.theme-light and body.theme-dark. Buttons use `button.x:not(.clickable-icon)`
-   or `.aos-ss button.x` so they win over compat's base `button:not(.clickable-icon)`. ══ */
+/* ══ The agent menus Code's composer and Routines use (spec 2026-10-07-sessions-ux; the Sessions tab they were made for
+   went with remove-sessions D1), and the thread rows ThreadView, CodeChat and CodePanes draw (.aos-ss-*, D10). Colours
+   come only from the tokens, so both themes follow body.theme-light and body.theme-dark. Buttons use
+   `button.x:not(.clickable-icon)` so they win over compat's base `button:not(.clickable-icon)`. ══ */
 
 /* Host and model menu (U2, U6, U9; ui/HostModelMenu.ts): the chip, and the popover that opens above it. */
 .aos-hm { position: relative; display: inline-flex; min-width: 0; max-width: 100%; }
@@ -2675,45 +2499,10 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-hm-caption { padding: 6px 10px 2px; border-top: 1px solid var(--udx-line); font-size: 12px; color: var(--udx-text-3); }
 
 /* Access menu (U7; ui/AccessMenu.ts): the composer's chip and the menu that opens above it. */
-.aos-am { position: relative; display: inline-flex; }
-.aos-am .aos-am-trigger, .aos-am button.aos-am-trigger {
-  display: inline-flex; align-items: center; gap: 6px; height: 32px; box-sizing: border-box; padding: 0 10px;
-  border: 1px solid var(--udx-line); border-radius: 999px; background: transparent; color: var(--udx-text-2);
-  font-family: var(--udx-sans); font-size: 12.5px; font-weight: 500; box-shadow: none;
-}
-.aos-am button.aos-am-trigger:hover:not(:disabled) { background: var(--udx-raised); color: var(--udx-text); }
-.aos-am.is-open button.aos-am-trigger { border-color: var(--udx-focus); background: var(--udx-bg); color: var(--udx-text); }
-.aos-am button.aos-am-trigger:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
-.aos-am .aos-am-trigger.is-fixed { cursor: default; color: var(--udx-text-3); }
-.aos-am-icon, .aos-am-caret { display: inline-flex; }
-.aos-am-icon svg { width: 13px; height: 13px; }
-.aos-am-caret svg { width: 12px; height: 12px; }
-.aos-am-menu {
-  position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 30; width: 470px; max-width: calc(100vw - 48px);
-  box-sizing: border-box; padding: 6px; border: 1px solid var(--udx-line-2); border-radius: 14px;
-  background: var(--udx-bg); box-shadow: var(--udx-shadow); font-family: var(--udx-sans);
-}
-.aos-am-head, .aos-sm-head {
+.aos-sm-head {
   padding: 6px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--udx-text-3);
 }
-.aos-am-menu button.aos-am-item {
-  display: flex; align-items: flex-start; gap: 12px; width: 100%; height: auto; padding: 8px 10px; border: 0;
-  border-radius: 9px; background: transparent; color: var(--udx-text); text-align: left; white-space: normal;
-  font-weight: 400; box-shadow: none;
-}
-.aos-am-menu button.aos-am-item:hover:not(:disabled), .aos-am-menu button.aos-am-item:focus-visible,
-.aos-am-menu button.aos-am-item.is-checked { background: var(--udx-raised); outline: none; }
-.aos-am-menu button.aos-am-item:focus-visible { box-shadow: inset 0 0 0 2px var(--udx-focus); }
-.aos-am-itemicon { flex: none; display: inline-flex; margin-top: 2px; color: var(--udx-text-2); }
-.aos-am-itemicon svg { width: 18px; height: 18px; stroke-width: 1.8; }
-.aos-am-text { flex: 1; min-width: 0; }
-.aos-am-name { display: block; font-size: 14px; font-weight: 500; }
-.aos-am-desc { display: block; font-size: 12.5px; color: var(--udx-text-2); }
-.aos-am-map { display: block; margin-top: 3px; font-family: var(--udx-mono); font-size: 11px; color: var(--udx-text-3); }
-.aos-am-check { flex: none; display: inline-flex; width: 16px; margin-top: 3px; }
-.aos-am-check svg { width: 16px; height: 16px; }
-.aos-am-note { margin: 6px 10px 4px; padding-top: 8px; border-top: 1px solid var(--udx-line); font-size: 12px; color: var(--udx-text-3); }
 
 /* The `/` menu (U8; ui/SlashMenu.ts): the host's commands above the composer, focus kept in the textarea. */
 .aos-sm-anchor { position: relative; }
@@ -2744,135 +2533,15 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-sm-keys { font-family: var(--udx-mono); }
 
 /* The tab takes the whole content pane, edge to edge. */
-.aos-wb-content:has(> .aos-ss) { display: flex; padding: 0; overflow: hidden; }
-.aos-ss { flex: 1; min-width: 0; min-height: 0; display: flex; background: var(--udx-bg); color: var(--udx-text); }
-.aos-ss button { font-family: var(--udx-sans); }
 .aos-ss-note { padding: 8px 10px; font-size: 12.5px; color: var(--udx-text-3); }
 .aos-ss-error {
   padding: 8px 12px; border-radius: 10px; background: var(--udx-danger-bg); color: var(--udx-danger);
   font-size: 13px; white-space: pre-wrap; word-break: break-word;
 }
 
-/* The list: New session, Vault, each workspace folder with its threads, the day's spend. */
-.aos-ss-list {
-  flex: 0 0 248px; max-width: 256px; min-height: 0; box-sizing: border-box; padding: 12px 8px 0; display: flex;
-  flex-direction: column; gap: 2px; background: var(--udx-surface); border-right: 1px solid var(--udx-line);
-}
-.aos-ss button.aos-ss-newbtn {
-  flex: none; display: flex; align-items: center; gap: 8px; width: 100%; height: auto; margin: 0 0 8px; padding: 8px 10px;
-  border: 1px solid var(--udx-line-2); border-radius: 8px; background: var(--udx-bg); color: var(--udx-text);
-  font-size: 13px; font-weight: 500; text-align: left;
-}
-.aos-ss button.aos-ss-newbtn:hover:not(:disabled) { background: var(--udx-raised); }
-.aos-ss button.aos-ss-newbtn.is-selected { background: var(--udx-raised-2); }
-.aos-ss-newicon, .aos-ss-rowicon, .aos-ss-wsicon { flex: none; display: flex; color: var(--udx-text-2); }
-.aos-ss-newicon svg { width: 15px; height: 15px; }
-.aos-ss-rowicon svg { width: 14px; height: 14px; }
-.aos-ss-wsicon svg { width: 13px; height: 13px; }
-.aos-ss-threads { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding-bottom: 8px; }
-.aos-ss-row {
-  display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
-  color: var(--udx-text); font-size: 13px;
-}
-.aos-ss-row:hover { background: var(--udx-raised); }
-.aos-ss-row:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: -2px; }
-.aos-ss-row.is-selected { background: var(--udx-raised-2); }
-.aos-ss-thread { padding-left: 16px; }
-.aos-ss-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 400; }
-.aos-ss-row.is-selected .aos-ss-title { font-weight: 500; }
-.aos-ss-hostdot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--udx-off-dot); }
-.aos-ss-hostdot.is-claude { background: var(--udx-info); }
-.aos-ss-hostdot.is-codex { background: var(--udx-gate); }
-.aos-ss-age { flex: none; font-size: 11.5px; color: var(--udx-text-3); font-variant-numeric: tabular-nums; }
-/* text-3 on raised-2 falls just under 4.5:1 in light theme; step the selected row's age up to text-2. */
-.aos-ss-row.is-selected .aos-ss-age { color: var(--udx-text-2); }
-.aos-ss-runmark { flex: none; font-size: 11.5px; line-height: 1; color: var(--udx-warn); }
-.aos-ss-ws {
-  display: flex; align-items: center; gap: 6px; padding: 12px 10px 4px; font-size: 12.5px; font-weight: 500;
-  color: var(--udx-text-2);
-}
-.aos-ss-wsname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aos-ss-spend { flex: none; margin: 0 -8px; padding: 10px 18px 12px; border-top: 1px solid var(--udx-line); font-size: 12px; color: var(--udx-text-3); }
-.aos-ss-spendline { display: flex; justify-content: space-between; gap: 8px; }
-.aos-ss-spendval { font-family: var(--udx-mono); }
-.aos-ss-spendbar { height: 4px; margin-top: 6px; border-radius: 2px; background: var(--udx-raised-2); overflow: hidden; }
-.aos-ss-spendfill { height: 100%; border-radius: 2px; background: var(--udx-ok-dot); }
-.aos-ss-spend.is-high .aos-ss-spendfill { background: var(--udx-warn-dot); }
-.aos-ss-spend.is-over .aos-ss-spendfill { background: var(--udx-danger-dot); }
-
-/* Sessions ▸ History (install-import B11): past host sessions by day, each with Resume in Code. */
-.aos-ss-hcount { flex: 1; min-width: 0; font-size: 12px; color: var(--udx-text-3); }
-.aos-ss-history { display: flex; flex-direction: column; gap: 10px; }
-.aos-ss-hfilter { width: 100%; box-sizing: border-box; font-size: 12.5px; }
-.aos-ss-hnohost { padding: 0; color: var(--udx-text-2); }
-.aos-ss-hdays { display: flex; flex-direction: column; gap: 14px; padding-bottom: 16px; }
-.aos-ss-hday { display: flex; flex-direction: column; }
-.aos-ss-hdayname { padding: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--udx-text-2); border-bottom: 1px solid var(--udx-line); }
-.aos-ss-hrow { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--udx-line); }
-.aos-ss-hrow > .aos-ss-hostdot { margin-top: 6px; }
-.aos-ss-hbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.aos-ss-htitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.4; }
-.aos-ss-hmeta { font-size: 11.5px; color: var(--udx-text-3); font-variant-numeric: tabular-nums; }
-.aos-ss-hsummary { font-size: 12.5px; line-height: 1.45; color: var(--udx-text-2); }
-.aos-ss-hwhy { font-size: 11.5px; color: var(--udx-text-3); }
-.aos-ss button.aos-ss-hresume { flex: none; align-self: center; height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12px; }
-.aos-ss button.aos-ss-hmore { align-self: flex-start; height: 28px; padding: 0 12px; border-radius: 6px; font-size: 12.5px; }
-
-/* The reader: the bar, the conversation (with the review drawer over it), the composer. Vault holds ChatTab. */
-.aos-ss-reader { flex: 1; min-width: 360px; min-height: 0; display: flex; flex-direction: column; background: var(--udx-bg); overflow: hidden; }
-.aos-ss-reader.is-vault { padding: 16px 24px 14px; }
-/* ChatTab draws into .aos-ss-vaultchat itself (it adds .aos-assistant there): one centred column, as the threads have. */
-.aos-ss-vaultchat.aos-assistant { flex: 1; min-height: 0; width: 100%; height: auto; max-width: 760px; margin: 0 auto; padding: 0; box-sizing: border-box; }
-.aos-ss-vaultchat .aos-asst-head { justify-content: flex-start; padding-top: 0; }
-.aos-ss-vaultchat .aos-asst-log { min-height: 0; }
-.aos-ss-top {
-  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 52px; box-sizing: border-box;
-  margin: 0; padding: 10px 20px; border-bottom: 1px solid var(--udx-line);
-}
-.aos-ss-top .aos-reader-title { font-size: 14px; font-weight: 600; letter-spacing: 0; }
-.aos-ss-crumbs { flex: 1; min-width: 200px; display: flex; align-items: baseline; gap: 6px; overflow: hidden; font-size: 13.5px; }
-.aos-ss-crumb-ws, .aos-ss-sep { color: var(--udx-text-3); white-space: nowrap; }
-/* The crumb's workspace opens Spaces on it, and Sessions scoped by another tab says so (spaces-redesign D12). */
-.aos-ss a.aos-ss-crumb-ws.is-link {
-  color: var(--udx-text-2); border-radius: 3px;
-  text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 2px;
-}
-.aos-ss a.aos-ss-crumb-ws.is-link:hover { color: var(--udx-text); text-decoration-color: currentColor; }
-.aos-ss a.aos-ss-crumb-ws.is-link:focus-visible, .aos-ss a.aos-ss-scopeall:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
-.aos-ss-scope { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; }
-.aos-ss a.aos-ss-scopeall { color: var(--udx-text-2); text-decoration: underline; text-decoration-color: var(--udx-line-2); text-underline-offset: 2px; }
-.aos-ss a.aos-ss-scopeall:hover { color: var(--udx-text); text-decoration-color: currentColor; }
-.aos-ss-crumb-title { min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aos-ss-topbranch {
-  display: inline-flex; align-items: center; gap: 5px; max-width: 220px; padding: 3px 9px; border: 1px solid var(--udx-line);
-  border-radius: 7px; font-family: var(--udx-mono); font-size: 12px; color: var(--udx-text-2);
-}
-.aos-ss-topbranchicon { flex: none; display: flex; }
-.aos-ss-topbranchicon svg { width: 12px; height: 12px; }
-.aos-ss-topbranchname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aos-ss button.aos-ss-reviewbtn, .aos-ss button.aos-ss-stop {
-  display: inline-flex; align-items: center; gap: 6px; height: auto; margin: 0; padding: 5px 11px;
-  border: 1px solid var(--udx-line-2); border-radius: 8px; background: var(--udx-bg); color: var(--udx-text); font-size: 12.5px;
-}
-.aos-ss button.aos-ss-delete {
-  display: inline-flex; align-items: center; justify-content: center; height: auto; margin: 0; padding: 5px 7px;
-  border: 1px solid var(--udx-line-2); border-radius: 8px; background: var(--udx-bg); color: var(--udx-text);
-}
-.aos-ss button.aos-ss-delete:hover:not(:disabled) { background: var(--udx-raised); }
-.aos-ss button.aos-ss-delete:disabled { opacity: 0.5; }
-.aos-ss button.aos-ss-delete svg { width: 14px; height: 14px; }
-.aos-ss button.aos-ss-reviewbtn { font-weight: 500; }
-.aos-ss button.aos-ss-stop { font-weight: 400; }
-.aos-ss button.aos-ss-reviewbtn:hover:not(:disabled), .aos-ss button.aos-ss-stop:hover:not(:disabled) { background: var(--udx-raised); }
-.aos-ss button.aos-ss-reviewbtn.is-open { background: var(--udx-raised-2); }
 .aos-ss-plus { font-family: var(--udx-mono); color: var(--udx-ok); }
 .aos-ss-minus { font-family: var(--udx-mono); color: var(--udx-danger); }
-.aos-ss-kbd { font-family: var(--udx-mono); color: var(--udx-text-3); }
 
-.aos-ss-body { flex: 1; min-height: 0; display: flex; position: relative; }
-.aos-ss-scroll { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 20px 24px 8px; }
-.aos-ss-column { max-width: 760px; margin: 0 auto; }
-.aos-ss-timeline { display: flex; flex-direction: column; gap: 14px; padding-bottom: 8px; }
 .aos-ss-prompt { margin-top: 2px; }
 .aos-ss-bubble {
   padding: 10px 14px; border-radius: 12px; background: var(--udx-raised); color: var(--udx-text);
@@ -2888,14 +2557,14 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-ss-tool, .aos-ss-patch { display: flex; flex-direction: column; gap: 3px; font-family: var(--udx-mono); font-size: 12.5px; line-height: 1.55; }
 .aos-ss-patch { gap: 8px; }
 .aos-ss-patchfile { display: flex; flex-direction: column; gap: 3px; }
-.aos-ss button.aos-ss-toolline, .aos-cc button.aos-ss-toolline {
+.aos-cc button.aos-ss-toolline {
   display: flex; align-items: baseline; width: 100%; height: auto; margin: 0; padding: 0; border: none; border-radius: 4px;
   background: none; color: var(--udx-text); font-family: var(--udx-mono); font-size: 12.5px; font-weight: 400;
   line-height: 1.55; text-align: left; overflow: hidden; cursor: pointer;
 }
-.aos-ss button.aos-ss-toolline:hover:not(:disabled), .aos-cc button.aos-ss-toolline:hover:not(:disabled) { background: none; }
-.aos-ss button.aos-ss-toolline:hover .aos-ss-target, .aos-cc button.aos-ss-toolline:hover .aos-ss-target { text-decoration: underline; text-underline-offset: 2px; }
-.aos-ss button.aos-ss-toolline:focus-visible, .aos-cc button.aos-ss-toolline:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
+.aos-cc button.aos-ss-toolline:hover:not(:disabled) { background: none; }
+.aos-cc button.aos-ss-toolline:hover .aos-ss-target { text-decoration: underline; text-underline-offset: 2px; }
+.aos-cc button.aos-ss-toolline:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
 /* The glyphs are decoration: the `/ ""` alt text keeps them out of the accessible name (the first `content` is the fallback). */
 .aos-ss-toolline::before { content: "⏺"; content: "⏺" / ""; flex: none; margin-right: 0.6em; color: var(--udx-text-3); }
 .aos-ss-tool.is-ok > .aos-ss-toolline::before, .aos-ss-patchfile > .aos-ss-toolline::before { color: var(--udx-ok-dot); }
@@ -2924,7 +2593,7 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-ss-diffline.is-del { background: var(--udx-danger-bg); }
 .aos-ss-diffline.is-hunk { color: var(--udx-info); }
 .aos-ss-diffline.is-meta { color: var(--udx-text-3); }
-.aos-ss-filediff .aos-ss-note, .aos-ss-diffwrap .aos-ss-note { padding: 4px 0; }
+.aos-ss-filediff .aos-ss-note { padding: 4px 0; }
 
 /* The plan, a change of model, the turn's footer, the working line, the new session's intro. */
 .aos-ss-plan { padding: 10px 14px; border: 1px solid var(--udx-line); border-radius: 10px; font-size: 13px; }
@@ -2942,121 +2611,12 @@ button.aos-hm-customuse { flex: none; padding: 5px 10px; border-radius: 7px; fon
 .aos-ss-turnchange::before, .aos-ss-turnchange::after { content: ""; flex: 1; border-top: 1px solid var(--udx-line); }
 .aos-ss-done { font-size: 12px; color: var(--udx-text-3); }
 .aos-ss-done.is-failed { color: var(--udx-danger); }
-.aos-ss-working { font-family: var(--udx-mono); font-size: 12.5px; color: var(--udx-text-2); }
-.aos-ss-working::before { content: "✻"; content: "✻" / ""; display: inline-block; margin-right: 0.5em; color: var(--udx-warn); animation: aos-ss-spin 2.4s linear infinite; }
 @keyframes aos-ss-blink { 50% { opacity: 0.3; } }
 @keyframes aos-ss-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
-  .aos-ss-working::before, .aos-ss-tool.is-pending > .aos-ss-toolline::before, .aos-hm-refresh.is-busy svg { animation: none; }
-}
-.aos-ss-intro { display: flex; flex-direction: column; gap: 6px; max-width: 460px; margin: 12vh auto 0; text-align: center; }
-.aos-ss-introtitle { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-.aos-ss-introtext { font-size: 13.5px; line-height: 1.5; color: var(--udx-text-2); }
-
-/* Review changes: the repository card in a drawer over the conversation. */
-.aos-ss-drawer {
-  display: none; position: absolute; top: 0; right: 0; bottom: 0; z-index: 5; width: min(480px, 100%); box-sizing: border-box;
-  flex-direction: column; background: var(--udx-bg); border-left: 1px solid var(--udx-line); box-shadow: var(--udx-shadow);
-}
-.aos-ss-drawer.is-open { display: flex; }
-.aos-ss-drawerhead { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--udx-line); }
-.aos-ss-drawertitle { font-size: 13.5px; font-weight: 600; }
-.aos-ss button.aos-ss-drawerclose {
-  display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: none;
-  border-radius: 6px; background: transparent; color: var(--udx-text-2);
-}
-.aos-ss button.aos-ss-drawerclose:hover:not(:disabled) { background: var(--udx-raised); color: var(--udx-text); }
-.aos-ss-drawerclose svg { width: 16px; height: 16px; }
-.aos-ss-drawerbody { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 16px; }
-.aos-ss-repo { display: flex; flex-direction: column; gap: 8px; }
-.aos-ss-repohead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
-.aos-ss-reposum { font-size: 13.5px; font-weight: 500; }
-.aos-ss-branch { font-family: var(--udx-mono); font-size: 11.5px; color: var(--udx-text-3); }
-.aos-ss-counts { flex: none; display: inline-flex; gap: 6px; font-family: var(--udx-mono); font-size: 11.5px; }
-.aos-ss-counts.is-binary { color: var(--udx-text-3); }
-.aos-ss-commitresult { font-size: 12.5px; }
-.aos-ss-commitresult.is-ok { color: var(--udx-ok); }
-.aos-ss-commitresult.is-failed { color: var(--udx-danger); }
-.aos-ss-files { display: flex; flex-direction: column; gap: 4px; }
-.aos-ss-file { display: flex; align-items: center; gap: 8px; font-family: var(--udx-mono); font-size: 12px; }
-.aos-ss-change { flex: none; min-width: 62px; color: var(--udx-text-3); font-family: var(--udx-sans); font-size: 11.5px; }
-.aos-ss-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aos-ss-file .aos-ws-action { margin-left: 0; }
-.aos-ss-file.is-open .aos-ss-path { color: var(--udx-info); }
-.aos-ss-commit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.aos-ss input.aos-ss-message {
-  flex: 1; min-width: 160px; padding: 5px 10px; border: 1px solid var(--udx-line-2); border-radius: 8px;
-  background: var(--udx-field); color: var(--udx-text); font-family: var(--udx-sans); font-size: 13px;
-}
-.aos-ss input.aos-ss-message:focus { border-color: var(--udx-focus); outline: none; }
-.aos-ss-commit .mod-cta { border-radius: 999px; padding: 6px 14px; }
-
-/* The composer and its status line, in the conversation's column. z-index keeps its menus above the drawer. */
-.aos-ss-composer-wrap { flex: none; position: relative; z-index: 6; padding: 12px 24px 14px; }
-.aos-ss-composer {
-  position: relative; padding: 12px 12px 8px 16px; border: 1px solid var(--udx-line-2); border-radius: 18px;
-  background: var(--udx-bg); box-shadow: var(--udx-shadow);
-}
-.aos-ss .aos-ss-input {
-  display: block; width: 100%; min-height: 42px; max-height: 240px; box-sizing: border-box; field-sizing: content;
-  padding: 0; border: none; border-radius: 0; background: transparent; color: var(--udx-text); font-family: var(--udx-sans);
-  font-size: 14px; line-height: 1.5; resize: none;
-}
-.aos-ss .aos-ss-input:focus { border: none; outline: none; }
-.aos-ss .aos-ss-input:disabled { opacity: 0.6; }
-.aos-ss-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
-.aos-ss-spacer { flex: 1; }
-.aos-ss-wschip {
-  display: inline-flex; align-items: center; gap: 4px; height: 32px; box-sizing: border-box; padding: 0 2px 0 10px;
-  border: 1px solid var(--udx-line); border-radius: 999px; color: var(--udx-text-2); font-size: 12.5px; cursor: pointer;
-}
-.aos-ss-wschip:focus-within { border-color: var(--udx-focus); }
-.aos-ss-wschipicon { flex: none; display: flex; }
-.aos-ss-wschipicon svg { width: 13px; height: 13px; }
-.aos-ss-wschip select.aos-ss-workspace {
-  height: 30px; max-width: 200px; padding: 0 24px 0 2px; border: none; background-color: transparent; color: var(--udx-text);
-  font-family: var(--udx-sans); font-size: 12.5px;
-}
-.aos-ss-wschip select.aos-ss-workspace:focus { border: none; outline: none; }
-.aos-ss-noworkspace { padding: 0 6px; }
-.aos-ss button.aos-ss-send {
-  flex: none; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; margin: 0; padding: 0;
-  border: none; border-radius: 50%; background: var(--udx-inv); color: var(--udx-inv-text);
-}
-.aos-ss button.aos-ss-send:hover:not(:disabled) { background: var(--udx-inv-hover); }
-.aos-ss button.aos-ss-send:disabled { opacity: 0.35; }
-.aos-ss button.aos-ss-send.is-busy { opacity: 0.6; cursor: progress; }
-.aos-ss button.aos-ss-send:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 2px; }
-.aos-ss-send svg { width: 16px; height: 16px; stroke-width: 2.2; }
-.aos-ss-composererror { margin: 6px 6px 0; font-size: 12.5px; color: var(--udx-danger); }
-.aos-ss-composererror:empty { display: none; }
-.aos-ss-statusline {
-  display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 6px 0; font-family: var(--udx-mono); font-size: 11.5px;
-  color: var(--udx-text-3);
-}
-.aos-ss-statusline:empty { display: none; }
-
-/* Narrow: the list above the reader. */
-@media (max-width: 760px) {
-  .aos-ss { flex-direction: column; }
-  .aos-ss-list { flex: none; max-width: none; max-height: 38vh; border-right: none; border-bottom: 1px solid var(--udx-line); }
-  .aos-ss-scroll, .aos-ss-composer-wrap { padding-left: 16px; padding-right: 16px; }
-  .aos-ss-top { padding: 10px 16px; }
+  .aos-ss-tool.is-pending > .aos-ss-toolline::before, .aos-hm-refresh.is-busy svg { animation: none; }
 }
 
-/* Vault chat's composer (U9, canvas ChosenVault): Read only, the host and model chip, Send; the spend under it. */
-.aos-ss-vaultchat .aos-asst-composer { padding: 12px 12px 8px 16px; border-radius: 18px; }
-.aos-asst-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
-.aos-asst-tools { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.aos-asst-spacer { flex: 1 1 auto; }
-.aos-asst-bar .aos-asst-actions { margin-top: 0; }
-.aos-asst-foot {
-  display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 6px 0;
-  font-family: var(--udx-mono); font-size: 11.5px; color: var(--udx-text-3);
-}
-/* The local engine down (local-first A3): the line under the composer, and a failed answer's "Run once on …" buttons. */
-.aos-asst-localdown { color: var(--udx-warn); }
-.aos-asst-runonce { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 /* The Brain hub's sweep off with the local engine down: each signed-in host's "Run once on …" (local-first A3). */
 .aos-brain-sw-once { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 /* Settings ▸ Local engine (local-first A8, A13, A18): the state line, the rows, Pull the model. */
@@ -3184,7 +2744,7 @@ button.aos-term-started-change:not(.clickable-icon) { flex: none; height: 22px; 
 
 /* ══ Term: the deck (spec 2026-10-08-term-agent-deck T1) — the list beside the selected terminal ══════════════════════ */
 .aos-term.aos-term-deck { flex-direction: row; }
-/* Code fills the pane and never scrolls it (spec 2026-10-09-rail-sections-code D8), like Sessions and the Pulse cockpit.
+/* Code fills the pane and never scrolls it (spec 2026-10-09-rail-sections-code D8), like the Pulse cockpit.
    The deck mounts on the content area itself, whose 20/28px padding and borders sat on top of .aos-term-fullpane's
    100% height: the page scrolled 50px and the composer's foot hid under the window's edge. Only the terminal, the
    list and the composer's text scroll. */
@@ -5506,7 +5066,7 @@ button.aos-pulse-waiting-go:not(.clickable-icon) { padding: 2px 10px; font-size:
 .aos-st-golocal { display: flex; align-items: center; gap: 10px; margin-top: 8px; color: var(--udx-text-2); font-size: 12.5px; }
 /* ── end the guided tour ── */
 
-/* ══ The Computer pane (agent-computer D4, D5, D32, D35) — docked right of the Code terminal and the Sessions reader ═══ */
+/* ══ The Computer pane (agent-computer D4, D5, D32, D35) — docked right of the Code terminal ═══ */
 /* The width is set inline (320 to the row less 360, remembered per page); the terminal or the reader keeps at least 360px. The
    view's rectangle is painted by main's native browser view, so nothing of the page may sit over it: the ask cards stack
    above it, and a menu or a modal takes the view away while it is open. */
@@ -5514,8 +5074,8 @@ button.aos-pulse-waiting-go:not(.clickable-icon) { padding: 2px 10px; font-size:
 .aos-cp.is-collapsed { width: 40px; flex-basis: 40px; }
 /* Once the user has sized the pane it may squeeze the session's column down to 360px (session-browser S11). */
 .aos-term-main.is-narrowable { min-width: 360px; }
-/* An open pane gives way to its session column's floor rather than squeezing it, on both pages: the terminal's 480px on
-   Code (360px once the user has sized the pane), the reader's 360px on Sessions (session-browser S11). */
+/* An open pane gives way to its session column's floor rather than squeezing it: the terminal's 480px on Code (360px
+   once the user has sized the pane; session-browser S11). */
 .aos-cp:not(.is-collapsed) { flex-shrink: 1; }
 /* The bar is always drawn: a centred grip, brighter under the pointer and on focus (session-browser S11). */
 .aos-cp-handle { position: absolute; left: -6px; top: 0; bottom: 0; z-index: 5; width: 11px; cursor: col-resize; }
@@ -5553,7 +5113,7 @@ button.aos-cp-power:not(.clickable-icon) { flex: none; height: 24px; padding: 0 
 button.aos-cp-power[aria-checked="true"]:not(.clickable-icon) { border-color: transparent; background: var(--udx-ok-bg); color: var(--udx-ok); }
 button.aos-cp-power:disabled { opacity: 0.45; cursor: default; }
 button.aos-cp-power:focus-visible { outline: 2px solid var(--udx-focus); outline-offset: 1px; }
-@media (max-width: 760px) { .aos-ss > .aos-cp.is-collapsed .aos-cp-strip { flex-direction: row; } }
+
 .aos-cp.is-collapsed .aos-cp-body { display: none; }
 .aos-cp-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; overflow: hidden; }
 /* Only the stage gives way when the column runs short (a long log, the help open): the view shrinks, down to nothing
@@ -5625,16 +5185,9 @@ button.aos-cp-helpbtn:not(.clickable-icon) { flex: none; height: auto; padding: 
 .aos-cp-help.is-open { display: block; }
 /* The rows' marks (D32, D35): a ring while the session's agent drives a computer off-screen, filled amber while it waits
    on an ask; Code rows also say "waiting". A ring, so it never reads as a host dot. */
-.aos-tl-cdot, .aos-ss-cdot { flex: none; width: 8px; height: 8px; box-sizing: border-box; border: 2px solid var(--udx-gate-dot); border-radius: 50%; }
-.aos-tl-cdot.is-waiting, .aos-ss-cdot.is-waiting { border-color: var(--udx-warn-dot); background: var(--udx-warn-dot); }
+.aos-tl-cdot { flex: none; width: 8px; height: 8px; box-sizing: border-box; border: 2px solid var(--udx-gate-dot); border-radius: 50%; }
+.aos-tl-cdot.is-waiting { border-color: var(--udx-warn-dot); background: var(--udx-warn-dot); }
 .aos-tl-waiting { flex: none; padding: 0 6px; border-radius: 999px; background: var(--udx-warn-bg); font-size: 11px; color: var(--udx-warn); }
-/* Narrow: Sessions stacks its list over the reader, and the pane goes under them. */
-@media (max-width: 760px) {
-  /* A real height: the view takes what the bars leave of it, and an empty view would otherwise be 0 px tall. */
-  .aos-ss > .aos-cp { width: auto !important; max-width: none; flex: 0 0 45vh; height: 45vh; border-left: 0; border-top: 1px solid var(--udx-line); }
-  .aos-ss > .aos-cp.is-collapsed { flex: 0 0 auto; height: auto; }
-  .aos-ss > .aos-cp.is-collapsed .aos-cp-head { flex-direction: row; justify-content: flex-end; padding: 0 8px; }
-}
 
 /* The Code sidebar (code-chat C6): a status glyph, the title, "Host · status · age"; past and closed conversations open read-only. */
 .aos-tl-glyph { flex: none; width: 14px; height: 14px; box-sizing: border-box; margin-top: 2px; border-radius: 50%; }

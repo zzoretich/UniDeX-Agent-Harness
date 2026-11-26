@@ -1,10 +1,9 @@
-// agentSessions.ts — what the Sessions tab shows of an agent session (spec 2026-10-07-unidex-sessions S10, §4.2, §4.5;
-// spec 2026-10-07-sessions-ux U1–U11). Pure: the threads grouped by workspace, a thread's events as timeline rows (tool
-// calls as a verb and a target, the latest plan of a turn, a marker where the model, effort or access changed), a turn's
-// footer and elapsed time, the repository card's summary and +/− totals, the day's session spend, which hosts the
-// composer offers, and the host and model menu's, access menu's and `/` menu's choices from the host catalog. The
-// app's main runs the turns and keeps the threads; views/SessionsTab.ts reaches them through the HudHost (host.ts
-// sessions and git).
+// agentSessions.ts — what the HUD shows of an agent session (spec 2026-10-07-unidex-sessions S10, §4.2, §4.5; spec
+// 2026-10-07-sessions-ux U1–U11), made for the Sessions tab and kept for Code (remove-sessions D10). Pure: a thread's
+// events as timeline rows (tool calls as a verb and a target, the latest plan of a turn, a marker where the model, effort
+// or access changed), a turn's footer and elapsed time, +/− totals, which hosts the composer offers, the host and model
+// menu's and `/` menu's choices from the host catalog, and the aliases a window without the catalog offers. Code's chat,
+// panes and composer read them; helpers only the Sessions tab used go in remove-sessions PR 2.
 import type { AgenticosJson, ProviderState, SessionHost } from "./aosConfig";
 import { sessionHosts } from "./aosConfig";
 import { ago } from "./notifications";

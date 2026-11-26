@@ -288,7 +288,7 @@ export class CodeChat {
     b.addEventListener("click", () => this.o.toTerminal());
   }
 
-  /** The tool line that has the focus, so a redraw gives it back (SessionsTab's keepFocus). */
+  /** The tool line that has the focus, so a redraw gives it back. */
   private focusKey(): string | null {
     const a = this.el.ownerDocument.activeElement as HTMLElement | null;
     return a && this.rowsEl.contains(a) ? a.getAttribute("data-focus") : null;

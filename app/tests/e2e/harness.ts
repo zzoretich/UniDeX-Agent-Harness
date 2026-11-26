@@ -66,7 +66,7 @@ export interface Expected {
    * drafts, the archived and the unreviewed live ones) and Review's "Older than 30d" queue.
    */
   brain: ExpectedBrain;
-  /** Sessions ▸ History (install-import B11): the digests the fixture writes for a Claude Code and a Codex session. */
+  /** Code ▸ History (remove-sessions D3; install-import B11): the digests the fixture writes for a Claude Code and a Codex session. */
   history: { digests: Record<"claude" | "codex", { id: string; title: string; summary: string }> };
   /** Skills ▸ MCP servers (install-import B6): the servers in each host's config, and the listing `aos import` wrote. */
   mcp: { claude: string; codex: string; both: string; remote: string; listed: Array<{ name: string; host: string; transport: string; command?: string; url?: string }> };
@@ -1020,11 +1020,10 @@ export function useApp(opts: LaunchOptions = {}): () => AppHandle {
 
 // ── helpers the specs share ──────────────────────────────────────────
 
-/** The rail's three sections (spec 2026-10-09-rail-sections-code D1), a line between each; "chat" (Sessions) only with a host
- *  signed in (local-first A17) or past sessions on disk for its History (install-import B11). Agent Workspace keeps the
- *  id "agent-teams" and follows Sessions (agent-workspace D2, D3). */
+/** The rail's three sections (spec 2026-10-09-rail-sections-code D1), a line between each. Agent Workspace keeps the id
+ *  "agent-teams" and follows Code (agent-workspace D2, D3; remove-sessions D1: Sessions is gone, "chat" an alias). */
 export const RAIL_SECTIONS = [
-  ["notifications", "pulse", "term", "chat", "agent-teams"],
+  ["notifications", "pulse", "term", "agent-teams"],
   ["todo", "spaces", "files", "routines", "proposals"],
   ["memory", "skills", "connectors", "runs"],
 ];

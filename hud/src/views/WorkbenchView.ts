@@ -8,7 +8,6 @@ import { RunsTab } from "./RunsTab";
 import { RoutinesTab } from "./RoutinesTab";
 import { SkillsTab } from "./SkillsTab";
 import { ConnectorsTab } from "./ConnectorsTab";
-import { SessionsTab } from "./SessionsTab";
 import { TermTab } from "./TermTab";
 import { ProposalsTab } from "./ProposalsTab";
 import { TodoTab } from "./TodoTab";
@@ -26,7 +25,7 @@ import { TODO_PATH, localDay } from "../data/todos";
 import { readTeams, diskAdapter, gateBadge } from "../data/teams";
 import { TRAIL_PATH } from "../data/promoteTrail";
 import { pendingReview, readTrailRows, touchesBrain, trailSince, type BrainMode, type ReviewQueue } from "../data/brainModel";
-import { PROVIDER_STATE_PATH, readAgenticosJson, sessionHosts } from "../data/aosConfig";
+import { readAgenticosJson, sessionHosts } from "../data/aosConfig";
 import { CONNECTORS_LIVE_PATH, CONNECTORS_PATH, CONNECTORS_USAGE_PATH, buildBoard, connectorsBadge, parseCaches } from "../data/connectorsModel";
 import { CaptureModal } from "../ui/CaptureModal";
 import { HOST_APP_SETTINGS, HOST_TOGGLE_THEME, runHostCommand } from "../ui/hostCommands";
@@ -44,8 +43,8 @@ interface RailTab { id: string; icon: string; label: string }
 
 /** The rail in three sections with a line between them (spec 2026-10-09-rail-sections-code D1): what reaches you and
  *  where you work, then what you keep and do, then the brain and its tools. Pulse is still Home (D4) though
- *  Notifications heads the rail. Sessions keeps the id "chat" it had as the Chat tab, and Code the id "term" it had as
- *  Term (D7), so links and commands that name them still open them. */
+ *  Notifications heads the rail. Code keeps the id "term" it had as Term (D7), so links and commands that name it still
+ *  open it; Sessions' "chat" is an alias of it (remove-sessions D4). */
 const RAIL_SECTIONS: RailTab[][] = [
   [
     { id: "notifications", icon: "bell", label: "Notifications" },
@@ -88,19 +87,19 @@ export const TAB_ALIASES: Record<string, string> = { agents: "agent-teams", chat
 export const WORKBENCH_TAB_IDS: readonly string[] = [...RAIL.map((t) => t.id), ...Object.keys(TAB_ALIASES), SETTINGS_TAB.id];
 
 /**
- * Where open() lands (spaces-redesign D12): a tab, and for Spaces, Sessions and Code what to show in it. Every field
+ * Where open() lands (spaces-redesign D12): a tab, and for Spaces and Code what to show in it. Every field
  * only selects; none starts anything.
  */
 export interface WorkbenchTarget {
-  /** A tab id (WORKBENCH_TAB_IDS); Sessions keeps the id "chat" and Code "term". */
+  /** A tab id (WORKBENCH_TAB_IDS); Code keeps the id "term", and Sessions' "chat" is an alias of it. */
   tab: string;
-  /** A workspace name: Spaces selects it; Sessions and Code scope their lists to it. */
+  /** A workspace name: Spaces selects it; Code scopes its list to it. */
   workspace?: string | null;
-  /** Spaces: the pane to show for the workspace (statusline.ts SPACES_PANES); Sessions: "history" shows its History
-   *  (install-import B11; the tour routes there); Agent Workspace: a pane by kind, Needs you, a team's or an agent's
+  /** Spaces: the pane to show for the workspace (statusline.ts SPACES_PANES); Code: "history" shows Code ▸ History
+   *  (remove-sessions D3; the tour routes there); Agent Workspace: a pane by kind, Needs you, a team's or an agent's
    *  profile (workspace.ts WORKSPACE_PANES; the tour routes there, agent-workspace D18). */
   pane?: SpacesPane | WorkspacePane | null;
-  /** A thread id: Sessions opens that thread; Spaces shows it in the workspace's history. */
+  /** A thread id: Spaces shows it in the workspace's history (Code ignores it, remove-sessions D4). */
   thread?: string | null;
   /** Brain only (brain-hub D15): the mode to show, Review's queue, a memory path to show in Library. */
   mode?: BrainMode | null;
@@ -122,7 +121,7 @@ interface WorkbenchTab {
 }
 
 /**
- * A tab's public reveal(target: RevealTarget), when it has one (Spaces, Sessions, Code): what open() hands the rest of
+ * A tab's public reveal(target: RevealTarget), when it has one (Spaces, Code, Agent Workspace): what open() hands the rest of
  * its target to, after setTab() has mounted the tab (spaces-redesign D12). Read by name so each tab owns its signature.
  */
 function revealOf(tab: unknown): ((target: RevealTarget) => void) | null {
@@ -138,8 +137,6 @@ export class WorkbenchView extends ItemView {
   private chipHost!: HTMLElement;
   private railEl!: HTMLElement;
   private railTabsEl: HTMLElement | null = null;
-  /** Whether the rail has Sessions now (renderRailTabs). */
-  private railChat = false;
   private badgeEls: Record<string, HTMLElement> = {};
   private badgeTimer: number | null = null;
   private teamsReads = 0;
@@ -234,7 +231,6 @@ export class WorkbenchView extends ItemView {
         this.brainEpoch++;
       }
       if (hit(f.path) || (oldPath !== undefined && hit(oldPath))) this.scheduleBadges();
-      if (f.path === PROVIDER_STATE_PATH) this.refreshRailHosts();
     };
     this.registerEvent(this.app.vault.on("create", (f) => onPath(f)));
     this.registerEvent(this.app.vault.on("modify", (f) => onPath(f)));
@@ -243,8 +239,8 @@ export class WorkbenchView extends ItemView {
     // A vault root outside Obsidian sends no vault events, so the gate badge is also recounted once a minute.
     // Connectors' badge goes once its check is a day old (D5), which no vault event marks: recounted on the same clock.
     this.registerInterval(window.setInterval(() => { void this.refreshTeamsBadge(); void this.refreshConnectorsBadge(); }, 60_000));
-    // The Computer's asks badge Code and Sessions, and a notification's click opens the pane on its ask (agent-computer
-    // D27): main tells the one store, whichever tab is shown.
+    // The Computer's asks badge Code, and a notification's click opens the pane on its ask (agent-computer D27): main
+    // tells the one store, whichever tab is shown.
     const store = computerStore();
     if (store) {
       this.computerOff.push(store.subscribe(() => this.refreshComputerBadges()));
@@ -258,35 +254,17 @@ export class WorkbenchView extends ItemView {
     void this.refreshBadges();
   }
 
-  /** The rail's tab buttons, in their sections; Sessions only while an enabled host is signed in (local-first A17) or
-   *  History has a past session to show (install-import B11): plugin.sessionsShown(). */
+  /** The rail's tab buttons, in their sections. */
   private renderRailTabs(): void {
     const tabsEl = this.railTabsEl;
     if (!tabsEl) return;
     tabsEl.empty();
-    this.railChat = this.plugin.sessionsShown();
     RAIL_SECTIONS.forEach((section, i) => {
       // The line between sections (D5) scrolls with the buttons.
       if (i > 0) tabsEl.createDiv({ cls: "aos-wb-railsep", attr: { role: "separator", "aria-orientation": "horizontal" } });
-      for (const tab of section) {
-        // No host signed in and no past session to show → no Sessions tab (local-first A17, install-import B11).
-        if (tab.id === "chat" && !this.railChat) continue;
-        this.railButton(tabsEl, tab);
-      }
+      for (const tab of section) this.railButton(tabsEl, tab);
     });
     tabsEl.querySelectorAll(".aos-wb-railbtn").forEach((el) => el.toggleClass("is-active", (el as HTMLElement).dataset.tab === this.activeTab));
-  }
-
-  /**
-   * The hosts' sign-in changed in provider-state.json: Sessions joins the rail once a host's sign-in is recorded (a fresh
-   * install's first launch, when the runtime's check answers after the rail was drawn), unless it is there already for
-   * its History (install-import B11). It never leaves the rail under the user: a host signed out takes it away at the
-   * next launch.
-   */
-  refreshRailHosts(): void {
-    if (this.railChat || !this.railTabsEl || !this.plugin.sessionsShown()) return;
-    this.renderRailTabs();
-    void this.refreshBadges();
   }
 
   /** Home is Pulse (spec 2026-10-08-pulse-cockpit-design P5; it was Sessions under UniDeX D5). */
@@ -357,8 +335,7 @@ export class WorkbenchView extends ItemView {
     this.refreshComputerBadges();
   }
 
-  /** Code's and Sessions' badges (agent-computer D27, ruling R51): their sessions' pending Computer asks, wherever the
-   *  computer is, rose (main denies an ask nobody answers in time). Code's also counts its agent terminals whose row
+  /** Code's badge (agent-computer D27, ruling R51): its sessions' pending Computer asks, wherever the computer is, rose (main denies an ask nobody answers in time). Code's also counts its agent terminals whose row
    *  reads Needs you (code-chat C10: a prompt on the TUI's screen), rose only while a Computer ask is among them. */
   private refreshComputerBadges(): void {
     const store = computerStore();
@@ -366,12 +343,11 @@ export class WorkbenchView extends ItemView {
     const feeds = this.plugin.codeFeeds;
     const needs = feeds ? needsYouBadge(this.plugin.terminalPool.list().map((s) => statusInput(s, feeds.get(s.id)))) : 0;
     this.setBadge("term", asks + needs, asks > 0);
-    if (store) this.setBadge("chat", store.badge("chat"), true);
   }
 
   /**
-   * Opens the Computer pane on an ask (agent-computer D27): its page, its session there (the thread, or the terminal
-   * whose agent the computer names `code:<id>`), and the pane, which scrolls to the card. Select only.
+   * Opens the Computer pane on an ask (agent-computer D27): Code, the terminal whose agent the computer names
+   * `code:<id>`, and the pane, which scrolls to the card. Select only.
    */
   revealAsk(askId: string): void {
     const store = computerStore();
@@ -379,21 +355,18 @@ export class WorkbenchView extends ItemView {
     // M5: by its route, so a page's own ask (no agent at the wheel) goes where its computer was driven or is shown.
     const route = ask ? store?.route(ask) : null;
     if (!route) return;
-    const { page, session } = route;
-    if (page === "chat") { this.open(session ? { tab: "chat", thread: session.slice("chat:".length) } : { tab: "chat" }); return; }
+    const { session } = route;
     const s = session ? this.plugin.terminalPool.list().find((x) => x.originPty !== null && codeSession(x.originPty) === session) : undefined;
     if (this.activeTab !== "term") this.setTab("term");
     if (s) (this.tabs.term as TermTab | undefined)?.showSession(s.id);
   }
 
-  /** A Computer notification's Open the Computer pane (ruling R50): the page whose sessions wait on an ask, on its oldest
-   *  ask; else the page that last showed the pane; else Sessions (Code when Sessions is not on the rail). */
+  /** A Computer notification's Open the Computer pane (ruling R50): Code, on its oldest ask when one waits
+   *  (remove-sessions D8: the one page with a pane). */
   openComputerPane(): void {
     const store = computerStore();
-    const page = store?.pageToOpen() ?? "chat";
-    const oldest = store?.asks(page)[0];
+    const oldest = store?.asks("code")[0];
     if (store && oldest) { store.revealAsk(oldest.id); return; }
-    if (page === "chat" && this.open({ tab: "chat" })) return;
     this.setTab("term");
   }
 
@@ -586,16 +559,14 @@ export class WorkbenchView extends ItemView {
   /**
    * The one way into a tab from another tab or a link (spaces-redesign D12): shows `target.tab` (left as it is when it
    * is already shown), then hands the rest to that tab's reveal(): Spaces selects the workspace, its pane and thread;
-   * Sessions scopes its list to the workspace and opens the thread; Code scopes its list to the workspace's group;
+   * Code scopes its list to the workspace's group, or shows History (pane "history"), else shows its terminals;
    * Agent Workspace shows the node, or with none Needs you while a gate is pending. A retired id (TAB_ALIASES) opens the
-   * tab that took its place. Select only: it never resumes, opens a terminal, drafts or runs a verb. False when the tab
-   * cannot be shown: not a tab id, or Sessions with no host signed in and no past session (its rail button is hidden,
-   * D32; local-first A17; install-import B11).
+   * tab that took its place (Sessions' "chat" opens Code, remove-sessions D4). Select only: it never resumes, opens a
+   * terminal, drafts or runs a verb. False when the tab is not a tab id.
    */
   open(target: WorkbenchTarget): boolean {
     if (!WORKBENCH_TAB_IDS.includes(target.tab)) return false;
     const tab = TAB_ALIASES[target.tab] ?? target.tab;
-    if (tab === "chat" && !this.plugin.sessionsShown()) return false;
     if (this.activeTab !== tab || !this.tabs[tab]) this.setTab(tab);
     const reveal: RevealTarget = {};
     if (target.workspace) reveal.workspace = target.workspace;
@@ -629,7 +600,6 @@ export class WorkbenchView extends ItemView {
     if (id === "skills") return new SkillsTab(this.plugin, this);
     if (id === "connectors") return new ConnectorsTab(this.plugin, this);
     if (id === "agent-teams") return new AgentWorkspaceTab(this.plugin, this);
-    if (id === "chat") return new SessionsTab(this.plugin, this);
     if (id === "term") return new TermTab(this.plugin, this);
     if (id === "settings") return new SettingsTab(this.plugin, this);
     return null;
