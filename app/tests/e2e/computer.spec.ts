@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   AGENT, FX, RC_ONLY, TOUR_BOOK, USER_DATA, addRcOnly, agentRun, badge, command, computerEnv, content, expectNoErrors, installComputerAgents, openTab,
-  removeUserDataLink, providerState, rail, startOutsider, useApp, type Agent, type AgentReply,
+  removeUserDataLink, providerState, rail, resizeHud, startOutsider, useApp, type Agent, type AgentReply,
 } from "./harness";
 
 // ── the fixture sites ────────────────────────────────────────────────
@@ -116,6 +116,23 @@ const NOT_STARTED = "Not started by UniDeX: start this session from the Code pag
 
 const pane = (win: Page, page: "code"): Locator => content(win).locator(`.aos-cp[data-page="${page}"]`);
 const cards = (p: Locator) => p.locator(".aos-cp-ask");
+
+/** CI's macOS runners have a 1024 px screen (harness.ts emulateViewport), so a test that reads the page's geometry
+ *  (points, boxes, pixels) runs at that width here too, and gives the window back after. */
+async function atCiWidth(electron: ElectronApplication): Promise<() => Promise<void>> {
+  await resizeHud(electron, { width: 1024, height: 740 });
+  return () => resizeHud(electron, { width: 1480, height: 920 });
+}
+
+/** At that width Code's pane opens beside the terminal's 480 px floor at about 220 px, too narrow for a page laid out
+ *  as these tests measure it (Sessions' reader gave it about 360): Wide, as a person would press it, gives it the room
+ *  (the terminal keeps 360). Returns the undo, Side, so the next test starts from the pane's default. */
+async function widePane(win: Page): Promise<() => Promise<void>> {
+  const p = pane(win, "code");
+  await p.locator('.aos-cp-size[data-size="wide"]').click();
+  await expect.poll(() => p.evaluate((el) => el.getBoundingClientRect().width), { message: "the pane is wide enough for the page" }).toBeGreaterThan(320);
+  return async () => { await p.locator('.aos-cp-size[data-size="side"]').click(); };
+}
 
 /** A ref in a snapshot: `[e12] button "Add to basket"`. */
 function refOf(snapshot: string, role: string, name: string): string {
@@ -662,7 +679,9 @@ test.describe("both hosts, the Computer surface on", () => {
   test("a scrolled page: an x, y click is judged on the control under that point of the view, so Merge asks though a plain block shows a scroll's height above it (D43)", async () => {
     const h = app();
     const { win, app: electron } = h;
+    const back = await atCiWidth(electron);
     const a = await codeAgentWith(h, {});
+    const side = await widePane(win);
     const url = `${repoUrl()}#scrolled-point`;
     try {
       expectReply(await a.call("computer_open", { url }), { isError: false });
@@ -685,7 +704,7 @@ test.describe("both hosts, the Computer surface on", () => {
       await merge.card.locator('[data-answer="deny"]').click();
       expectReply(await merge.reply, { isError: true });
       expect(await inPage<string>(electron, url, 'document.getElementById("merged").textContent')).toBe("Open");
-    } finally { await a.finish(); }
+    } finally { await a.finish(); await side(); await back(); }
     expectNoErrors(h);
   });
 
@@ -750,8 +769,10 @@ test.describe("both hosts, the Computer surface on", () => {
 
   test("a password field is redacted in the snapshot and painted over in the screenshot, also after Show password (D9)", async () => {
     const h = app();
-    const { app: electron } = h;
+    const { win, app: electron } = h;
+    const back = await atCiWidth(electron);
     const a = await codeAgentWith(h, {});
+    const side = await widePane(win);
     const SECRET = "ebbtide-harbour-42";
     try {
       await a.call("computer_open", { url: loginUrl() });
@@ -778,7 +799,7 @@ test.describe("both hosts, the Computer surface on", () => {
       expectReply(await a.call("computer_click", { ref: refOf(snap, "button", "Show password") }), { isError: false });
       expect(await inPage<string>(electron, loginUrl(), 'document.getElementById("pw").type')).toBe("text");
       await check("after Show password");
-    } finally { await a.finish(); }
+    } finally { await a.finish(); await side(); await back(); }
     expectNoErrors(h);
   });
 
@@ -953,7 +974,9 @@ test.describe("both hosts, the Computer surface on", () => {
   test("the pointer shows the session's name at a click, in the main window and the pop-out, and is in neither the screenshot nor the outline (session-browser S18)", async () => {
     const h = app();
     const { win, app: electron } = h;
+    const back = await atCiWidth(electron);
     const a = await codeAgentWith(h, {});
+    const side = await widePane(win);
     type PointerState = { shown: boolean; at: { x: number; y: number } | null; tag: string; window: "main" | "pop" | null };
     const pointer = (): Promise<PointerState> => electron.evaluate(() => (globalThis as unknown as { __aosMain: { pointer(): PointerState } }).__aosMain.pointer());
     const p = pane(win, "code");
@@ -1055,7 +1078,7 @@ test.describe("both hosts, the Computer surface on", () => {
         // Leaves no pop-out open: the browser goes back to the pane (as the pop-out test does), so a later test's own pop-out press is the first.
         await electron.evaluate(({ BrowserWindow }) => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.getTitle().startsWith("UniDeX Browser")) w.close(); });
         await expect(p).not.toHaveClass(/is-popped/);
-      } finally { await a.finish(); }
+      } finally { await a.finish(); await side(); await back(); }
     }
     expectNoErrors(h);
   });
