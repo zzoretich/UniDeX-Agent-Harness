@@ -11,12 +11,17 @@ import { createNodeHost } from "../nodeHost";
 import { CHECK_MS, HistoryCache } from "./historyCache";
 import { SESSION_INDEX_PATH } from "./sessionHistory";
 
-function setup() {
+/** `failReads`: how many of the next file reads throw (EACCES), as an unreadable cache would. */
+function setup(o: { failReads?: { left: number } } = {}) {
   const vault = fs.mkdtempSync(nodePath.join(os.tmpdir(), "aos-history-cache-"));
   fs.mkdirSync(nodePath.join(vault, "brain", "_index"), { recursive: true });
   const node = createNodeHost();
   const counts = { stat: 0, hosts: 0 };
-  setHudHost({ ...node, fs: { ...node.fs, statSync: (p) => { counts.stat++; return node.fs.statSync(p); } } });
+  const promises = { ...node.fs.promises, readFile: ((...args: Parameters<typeof node.fs.promises.readFile>) => {
+    if (o.failReads && o.failReads.left > 0) { o.failReads.left--; return Promise.reject(new Error("EACCES: permission denied")); }
+    return node.fs.promises.readFile(...args);
+  }) as typeof node.fs.promises.readFile };
+  setHudHost({ ...node, fs: { ...node.fs, promises, statSync: (p) => { counts.stat++; return node.fs.statSync(p); } } });
   let now = 1_000_000;
   let changes = 0;
   // A fake timer queue: nothing fires until the test says so, and the clock is the test's own.
@@ -102,4 +107,49 @@ test("a change skipped by the throttle is picked up by one trailing check, with 
     h.advance(CHECK_MS * 3);
     assert.equal(h.counts.stat, 4);
   }
+});
+
+test("remove-sessions D3: loaded() is false before the first read and true after it, with no index on disk too", async () => {
+  const h = setup();
+  assert.equal(h.cache.loaded(), false, "nothing read yet");
+  h.cache.refresh(true);
+  await until(() => h.cache.loaded());
+  assert.equal(h.cache.loaded(), true);
+  assert.deepEqual(h.cache.rows(), []);
+  assert.equal(h.cache.error(), null);
+});
+
+test("remove-sessions D3: error() names a failed read, and clears on the next good read", async () => {
+  const fail = { left: 1 };
+  const h = setup({ failReads: fail });
+  fs.writeFileSync(nodePath.join(h.vault, SESSION_INDEX_PATH), JSON.stringify({ schema: 1, sessions: [] }));
+  h.cache.refresh(true);
+  await until(() => h.cache.loaded());
+  assert.equal(h.cache.loaded(), true, "a failed read still ends the loading line");
+  assert.match(h.cache.error() ?? "", /EACCES/);
+  h.cache.refresh(true);
+  await until(() => h.cache.error() === null);
+  assert.equal(h.cache.error(), null, "the next good read clears it");
+});
+
+test("remove-sessions final I1: hostReady() follows the hosts the last refresh read, and reading it reads nothing more", async () => {
+  const vault = fs.mkdtempSync(nodePath.join(os.tmpdir(), "aos-history-ready-"));
+  fs.mkdirSync(nodePath.join(vault, "brain", "_index"), { recursive: true });
+  setHudHost(createNodeHost());
+  let reads = 0;
+  let ready = false;
+  const cache = new HistoryCache({
+    vault: () => vault,
+    hosts: () => { reads++; return { choices: [{ host: "codex", label: "Codex", hidden: false, ready, reason: ready ? null : "Codex is not logged in", bin: null }], world: { vault, home: os.tmpdir(), workspaces: [], links: {} } }; },
+  }, () => {});
+  assert.equal(cache.hostReady(), false, "nothing read yet");
+  cache.refresh(true);
+  await until(() => cache.loaded());
+  assert.equal(cache.hostReady(), false);
+  const before = reads;
+  for (let n = 0; n < 20; n++) cache.hostReady();
+  assert.equal(reads, before, "a render asking for it reads no config");
+  ready = true;
+  cache.refresh(true);
+  assert.equal(cache.hostReady(), true, "a sign-in shows at the next refresh");
 });

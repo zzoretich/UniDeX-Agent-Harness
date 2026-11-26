@@ -6,22 +6,15 @@
 import type { HostSessionAccess, HostSessionHost } from "./host";
 import { DEFAULT_TOUR_STATE, type TourState } from "./tour/state";
 
-/** One value per host the Sessions tab and Vault chat can run. */
+/** One value per agent host. */
 export interface PerHost<T> { claude: T; codex: T }
 
-/** The Sessions tab's last choice (spec 2026-10-07-sessions-ux U12): host and access globally, model and effort per
- *  host, so a new session starts where the last one left off. null means "the host's default". */
+/** The last session choice (spec 2026-10-07-sessions-ux U12), the Sessions composer's until remove-sessions; now the
+ *  model per host that new Code terminals start with, which Code's model chip sets (D15). null means "the host's
+ *  default"; host, access and effort are kept as stored, unread. */
 export interface SessionChoice {
   host: HostSessionHost | null;
   access: HostSessionAccess;
-  models: PerHost<string | null>;
-  efforts: PerHost<string | null>;
-}
-
-/** Vault chat's last choice, kept apart from the Sessions tab's: Vault chat is always read only, so it has no access,
- *  and its one-shot paths take fewer efforts. */
-export interface VaultChoice {
-  host: HostSessionHost | null;
   models: PerHost<string | null>;
   efforts: PerHost<string | null>;
 }
@@ -64,8 +57,8 @@ export interface FilesChoice {
 
 /** The Computer pane's width and whether it is collapsed (agent-computer D4), remembered per page. */
 export interface ComputerPaneSettings { width: number; collapsed: boolean }
-/** The pages with a Computer pane: Code (the deck) and Sessions (its tab id stays "chat"). */
-export type ComputerPaneId = "code" | "chat";
+/** The page with a Computer pane: Code (the deck). Sessions' "chat" page went with the tab (remove-sessions D8). */
+export type ComputerPaneId = "code";
 /** What data.json keeps: only the pages whose pane was changed, so a page never changed still starts collapsed in a
  *  narrow window (computerPaneStart). */
 export type ComputerPaneChoice = Partial<Record<ComputerPaneId, ComputerPaneSettings>>;
@@ -83,9 +76,9 @@ export interface AgenticOSSettings {
   vaultRoot: string;         // "" → this Obsidian vault's base path
   claudeConfigDir: string;   // "" → agenticos.json.claudeConfigDir → $CLAUDE_CONFIG_DIR → ~/.claude
   nodePath: string;          // "" → auto (src/data/nodeResolver.ts); a login-shell probe result is saved here
-  // Sessions (U12): read through sanitizeSessionChoice / sanitizeVaultChoice, since data.json may hold anything
+  // The model new Code terminals start with (U12; remove-sessions D9, D15): read through sanitizeSessionChoice, since
+  // data.json may hold anything
   sessionChoice: SessionChoice;
-  vaultChoice: VaultChoice;
   // Term (spec 2026-10-08-term-agent-deck): read through sanitizeTerminalChoice
   terminalChoice: TerminalChoice;
   // The Term composer's saved prompts (T12): read through data/termComposer.ts sanitizeSnippets
@@ -107,7 +100,7 @@ export interface AgenticOSSettings {
 }
 
 /** Keys data.json may still hold from earlier versions; loadSettings prunes them (the two HUD-only toggles, D10). */
-export const DEAD_SETTINGS_KEYS = ["snapshotPath", "runsPath", "sessionPath", "snapshotHistoryDir", "refreshDebounceMs", "costEnabled", "telemetryEnabled"];
+export const DEAD_SETTINGS_KEYS = ["snapshotPath", "runsPath", "sessionPath", "snapshotHistoryDir", "refreshDebounceMs", "costEnabled", "telemetryEnabled", "vaultChoice"];
 
 export const DEFAULT_SETTINGS: AgenticOSSettings = {
   statusBarEnabled: true,
@@ -122,9 +115,8 @@ export const DEFAULT_SETTINGS: AgenticOSSettings = {
   vaultRoot: "",
   claudeConfigDir: "",
   nodePath: "",
-  // Sessions
+  // The model new Code terminals start with (remove-sessions D15)
   sessionChoice: { host: null, access: "edit", models: { claude: null, codex: null }, efforts: { claude: null, codex: null } },
-  vaultChoice: { host: null, models: { claude: null, codex: null }, efforts: { claude: null, codex: null } },
   // Term
   terminalChoice: { host: null, access: "host", agentPlace: "vault", recent: [] },
   terminalSnippets: [],
@@ -147,11 +139,6 @@ const ACCESS: readonly HostSessionAccess[] = ["read", "edit", "run"];
 const SESSION_EFFORTS: PerHost<readonly string[]> = {
   claude: ["low", "medium", "high", "xhigh", "max"],
   codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
-};
-/** The levels Vault chat's one-shot paths take: claude -p --effort, and ask.js --effort= (the chat surface's rules). */
-const VAULT_EFFORTS: PerHost<readonly string[]> = {
-  claude: ["low", "medium", "high", "xhigh", "max"],
-  codex: ["minimal", "low", "medium", "high", "xhigh"],
 };
 /** A model id the app's session schema admits: one word, no leading dash (app/src/main/ipc/schemas.ts Model). */
 const MODEL_ID = /^[A-Za-z0-9._:/[\]-]+$/;
@@ -180,7 +167,8 @@ function pickEfforts(v: unknown, allowed: PerHost<readonly string[]>): PerHost<s
   return { claude: one("claude"), codex: one("codex") };
 }
 
-/** A clean copy of a stored Sessions choice; anything missing or malformed reads as its default. */
+/** A clean copy of a stored session choice (the model new Code terminals start with); anything missing or malformed reads
+ *  as its default. */
 export function sanitizeSessionChoice(raw: unknown): SessionChoice {
   const r = isRecord(raw) ? raw : {};
   return {
@@ -191,13 +179,7 @@ export function sanitizeSessionChoice(raw: unknown): SessionChoice {
   };
 }
 
-/** A clean copy of a stored Vault chat choice; anything missing or malformed reads as its default. */
-export function sanitizeVaultChoice(raw: unknown): VaultChoice {
-  const r = isRecord(raw) ? raw : {};
-  return { host: pickHost(r.host), models: pickModels(r.models), efforts: pickEfforts(r.efforts, VAULT_EFFORTS) };
-}
-
-/** The Sessions choice after a pick: the host becomes the last host, and a model, effort or access that is given
+/** The session choice after a pick (Code's model chip, remove-sessions D15): the host becomes the last host, and a model, effort or access that is given
  *  (null included) replaces the stored one for that host; one left out keeps it. Returns a new object to store. */
 export function rememberSessionChoice(
   current: unknown,
@@ -209,18 +191,6 @@ export function rememberSessionChoice(
   if (pick.effort !== undefined) c.efforts[pick.host] = pick.effort;
   if (pick.access !== undefined) c.access = pick.access;
   return sanitizeSessionChoice(c);
-}
-
-/** The Vault chat choice after a pick, as rememberSessionChoice does it (Vault chat has no access to keep). */
-export function rememberVaultChoice(
-  current: unknown,
-  pick: { host: HostSessionHost; model?: string | null; effort?: string | null },
-): VaultChoice {
-  const c = sanitizeVaultChoice(current);
-  c.host = pick.host;
-  if (pick.model !== undefined) c.models[pick.host] = pick.model;
-  if (pick.effort !== undefined) c.efforts[pick.host] = pick.effort;
-  return sanitizeVaultChoice(c);
 }
 
 // ── the Term tab's choice (spec 2026-10-08-term-agent-deck T2, T4, T11) ──
@@ -366,7 +336,7 @@ export const COMPUTER_PANE_NARROW = 760;
 /** Under this RENDERED width the pane drops what it can do without (session-browser S11). Not COMPUTER_PANE_NARROW,
  *  which is a window width. */
 export const COMPUTER_PANE_COMPACT = 380;
-const COMPUTER_PAGES: readonly ComputerPaneId[] = ["code", "chat"];
+const COMPUTER_PAGES: readonly ComputerPaneId[] = ["code"];
 
 function paneWidth(v: unknown): number {
   if (typeof v !== "number" || !Number.isFinite(v)) return COMPUTER_PANE_WIDTH.default;
@@ -388,13 +358,11 @@ function storedPanes(raw: unknown): ComputerPaneChoice {
   return out;
 }
 
-/** A clean copy of the stored Computer pane for both pages; anything missing or malformed reads as 440 px and open. */
+/** A clean copy of the stored Computer pane; anything missing or malformed reads as 440 px and open. A stored "chat"
+ *  page (Sessions', remove-sessions D8) is dropped. */
 export function sanitizeComputerPane(v: unknown): Record<ComputerPaneId, ComputerPaneSettings> {
   const stored = storedPanes(v);
-  return {
-    code: stored.code ?? { width: COMPUTER_PANE_WIDTH.default, collapsed: false },
-    chat: stored.chat ?? { width: COMPUTER_PANE_WIDTH.default, collapsed: false },
-  };
+  return { code: stored.code ?? { width: COMPUTER_PANE_WIDTH.default, collapsed: false } };
 }
 
 /** How a page's pane starts: as it was left, or, never changed, collapsed when the window is under 760 px wide (the

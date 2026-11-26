@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_SETTINGS, DEAD_SETTINGS_KEYS,
-  sanitizeSessionChoice, sanitizeVaultChoice, rememberSessionChoice, rememberVaultChoice,
+  sanitizeSessionChoice, rememberSessionChoice,
   sanitizeTerminalChoice, rememberTerminalChoice, TERM_RECENT_MAX,
   sanitizeAgentWorkspace, sanitizeFilesChoice, rememberFilesChoice, FILES_FAVORITES_MAX, FILES_RECENTS_MAX,
   sanitizeComputerPane, paneMax, paneSizeWidth, paneSizeOf, computerPaneStart, rememberComputerPane, COMPUTER_PANE_NARROW,
@@ -30,20 +30,24 @@ test("cost and telemetry are the system's switches, not plugin settings (spec 20
   for (const k of DEAD_SETTINGS_KEYS) assert.equal(k in DEFAULT_SETTINGS, false, k);
 });
 
+test("remove-sessions D9: vaultChoice is a dead key, pruned from a loaded data.json; sessionChoice is kept", () => {
+  assert.ok(DEAD_SETTINGS_KEYS.includes("vaultChoice"), "Vault chat's choice is pruned");
+  assert.equal("vaultChoice" in DEFAULT_SETTINGS, false);
+  assert.equal(DEAD_SETTINGS_KEYS.includes("sessionChoice"), false, "Code's launcher and model chip read it (D15)");
+  assert.ok("sessionChoice" in DEFAULT_SETTINGS);
+});
+
 // ── remembered session choices (spec 2026-10-07-sessions-ux U12) ──
 
 const EMPTY = { claude: null, codex: null };
 
 test("the remembered choices default to no host, edit access and the hosts' defaults", () => {
   assert.deepEqual(DEFAULT_SETTINGS.sessionChoice, { host: null, access: "edit", models: EMPTY, efforts: EMPTY });
-  assert.deepEqual(DEFAULT_SETTINGS.vaultChoice, { host: null, models: EMPTY, efforts: EMPTY });
-  assert.equal("access" in DEFAULT_SETTINGS.vaultChoice, false, "Vault chat is always read only");
 });
 
 test("a data.json without the keys reads as the defaults", () => {
   for (const raw of [undefined, null, {}, [], "claude", 3, true]) {
     assert.deepEqual(sanitizeSessionChoice(raw), DEFAULT_SETTINGS.sessionChoice, String(raw));
-    assert.deepEqual(sanitizeVaultChoice(raw), DEFAULT_SETTINGS.vaultChoice, String(raw));
   }
 });
 
@@ -54,8 +58,6 @@ test("a well-formed choice reads back unchanged", () => {
     efforts: { claude: "max", codex: "ultra" },
   };
   assert.deepEqual(sanitizeSessionChoice(session), session);
-  const vault = { host: "claude", models: { claude: "default", codex: "gpt-5.1-codex" }, efforts: { claude: "xhigh", codex: "minimal" } };
-  assert.deepEqual(sanitizeVaultChoice(vault), vault);
 });
 
 test("bad parts fall back to their defaults and good parts are kept", () => {
@@ -75,12 +77,6 @@ test("a model id must be one word the app admits", () => {
   for (const bad of ["", "   ", "--dangerously-skip-permissions", "two words", "a;b", "x".repeat(81), null, {}]) {
     assert.equal(model(bad), null, String(bad));
   }
-});
-
-test("Vault chat takes only the efforts its one-shot paths admit", () => {
-  const got = sanitizeVaultChoice({ host: "codex", efforts: { claude: "max", codex: "max" } });
-  assert.deepEqual(got.efforts, { claude: "max", codex: null }, "ask.js --effort= stops at xhigh");
-  assert.equal("access" in sanitizeVaultChoice({ access: "run" }), false);
 });
 
 test("sanitizing returns a fresh copy, never the defaults or the input", () => {
@@ -104,14 +100,6 @@ test("remembering a pick sets the host and replaces only what the pick names", (
   assert.equal(c.efforts.claude, "high");
   assert.equal(rememberSessionChoice(c, { host: "codex", effort: "turbo" }).efforts.codex, null, "a level the host does not take is dropped");
 });
-
-test("remembering a Vault chat pick works the same way and never stores access", () => {
-  const v = rememberVaultChoice({ host: "other" }, { host: "codex", model: "gpt-5.1-codex", effort: "xhigh" });
-  assert.deepEqual(v, { host: "codex", models: { claude: null, codex: "gpt-5.1-codex" }, efforts: { claude: null, codex: "xhigh" } });
-  assert.deepEqual(rememberVaultChoice(v, { host: "claude" }).models, v.models);
-});
-
-// ── the Term tab's choice (spec 2026-10-08-term-agent-deck) ──
 
 test("the Term choice defaults to no remembered host, Host default access, the vault, no recents", () => {
   assert.deepEqual(DEFAULT_SETTINGS.terminalChoice, { host: null, access: "host", agentPlace: "vault", recent: [] });
@@ -195,21 +183,27 @@ test("Update links (files-finder D17) stays on until it is turned off, and only 
 
 const OPEN = { width: 440, collapsed: false };
 
-test("the Computer pane is 440 px wide and open on both pages until it is changed; junk reads as that", () => {
-  assert.deepEqual(DEFAULT_SETTINGS.computerPane, {}, "nothing stored: each page starts from the defaults");
+test("the Computer pane is 440 px wide and open until it is changed; junk reads as that", () => {
+  assert.deepEqual(DEFAULT_SETTINGS.computerPane, {}, "nothing stored: the page starts from the defaults");
   for (const raw of [undefined, null, 7, "x", [], {}, { code: "wide" }, { chat: [] }, { code: null }]) {
-    assert.deepEqual(sanitizeComputerPane(raw), { code: OPEN, chat: OPEN }, JSON.stringify(raw) ?? String(raw));
+    assert.deepEqual(sanitizeComputerPane(raw), { code: OPEN }, JSON.stringify(raw) ?? String(raw));
   }
 });
 
+test("remove-sessions D8: a stored computerPane.chat (Sessions' pane) is dropped, and Code's is kept", () => {
+  assert.deepEqual(sanitizeComputerPane({ code: { width: 500, collapsed: true }, chat: { width: 610, collapsed: false } }), { code: { width: 500, collapsed: true } });
+  assert.deepEqual(rememberComputerPane({ chat: { width: 610, collapsed: true } }, "code", { width: 600, collapsed: false }), { code: { width: 600, collapsed: false } }, "saving Code's pane writes no chat page back");
+});
+
 test("sanitizeComputerPane keeps a width from 320 up in whole pixels and a real boolean, and drops the rest", () => {
-  const got = sanitizeComputerPane({ code: { width: 100, collapsed: true }, chat: { width: 5000, collapsed: "yes" }, other: { width: 500 } });
-  assert.deepEqual(got, { code: { width: 320, collapsed: true }, chat: { width: 5000, collapsed: false } });
+  const got = sanitizeComputerPane({ code: { width: 100, collapsed: true }, other: { width: 500 } });
+  assert.deepEqual(got, { code: { width: 320, collapsed: true } });
+  assert.deepEqual(sanitizeComputerPane({ code: { width: 5000, collapsed: "yes" } }), { code: { width: 5000, collapsed: false } });
   assert.equal("other" in got, false);
   for (const w of [NaN, Infinity, -Infinity, "600", null, {}, true]) {
     assert.equal(sanitizeComputerPane({ code: { width: w } }).code.width, 440, String(w));
   }
-  assert.equal(sanitizeComputerPane({ chat: { width: 512.6 } }).chat.width, 513);
+  assert.equal(sanitizeComputerPane({ code: { width: 512.6 } }).code.width, 513);
   const fresh = sanitizeComputerPane(undefined);
   fresh.code.width = 600;
   assert.equal(sanitizeComputerPane(undefined).code.width, 440, "a fresh copy each time");
@@ -218,19 +212,16 @@ test("sanitizeComputerPane keeps a width from 320 up in whole pixels and a real 
 test(`under ${COMPUTER_PANE_NARROW} px a page with nothing saved starts collapsed; a saved choice wins at any width`, () => {
   assert.equal(COMPUTER_PANE_NARROW, 760);
   assert.deepEqual(computerPaneStart({}, "code", 700), { width: 440, collapsed: true });
-  assert.deepEqual(computerPaneStart(undefined, "chat", 759), { width: 440, collapsed: true });
+  assert.deepEqual(computerPaneStart(undefined, "code", 759), { width: 440, collapsed: true });
   assert.deepEqual(computerPaneStart({}, "code", 760), OPEN);
   assert.deepEqual(computerPaneStart({ code: { width: 500, collapsed: false } }, "code", 700), { width: 500, collapsed: false }, "the user's toggle wins");
-  assert.deepEqual(computerPaneStart({ code: { width: 500, collapsed: false } }, "chat", 700), { width: 440, collapsed: true });
-  assert.deepEqual(computerPaneStart({ chat: "junk" }, "chat", 700), { width: 440, collapsed: true }, "junk is nothing saved");
+  assert.deepEqual(computerPaneStart({ code: "junk" }, "code", 700), { width: 440, collapsed: true }, "junk is nothing saved");
 });
 
-test("remembering one page's pane keeps the other page as it was stored, nothing saved included", () => {
-  const once = rememberComputerPane({}, "chat", { width: 610, collapsed: true });
-  assert.deepEqual(once, { chat: { width: 610, collapsed: true } });
-  assert.deepEqual(rememberComputerPane(once, "code", { width: 9999, collapsed: false }), { chat: { width: 610, collapsed: true }, code: { width: 9999, collapsed: false } });
+test("remembering the pane stores Code's page, cleaned", () => {
+  assert.deepEqual(rememberComputerPane({}, "code", { width: 9999, collapsed: false }), { code: { width: 9999, collapsed: false } });
   assert.deepEqual(rememberComputerPane("junk", "code", { width: 300, collapsed: false }), { code: { width: 320, collapsed: false } });
-  assert.deepEqual(rememberComputerPane({ code: 4, chat: { width: 700, collapsed: false } }, "chat", { width: 701, collapsed: true }), { chat: { width: 701, collapsed: true } });
+  assert.deepEqual(rememberComputerPane({ code: 4 }, "code", { width: 701, collapsed: true }), { code: { width: 701, collapsed: true } });
 });
 
 test("the maximum leaves the session 360 px", () => {

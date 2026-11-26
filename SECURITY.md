@@ -69,7 +69,7 @@ output. The design treats the page that shows them as untrusted (design D7,
     exports, so your profile and rc files' variables reach the agent as they did a typed line; the shell starts without
     those markers, and `CLAUDECODE` still goes). With the surface off main checks nothing and the page types the line
     into a shell, as before the computer; when main cannot vouch for the binary, or the shell gives no environment (a
-    startup file that exits, hangs or execs something else), it says why and the page does the same. Spaces and Sessions
+    startup file that exits, hangs or execs something else), it says why and the page does the same. Spaces and Code
     ▸ History type a Resume line only with a lowercase UUID from the scan (History's also the one in its transcript's
     file name) and, for Codex, `-C <folder>`, the folder the scan recorded, quoted; a line whose model, id or folder
     starts with `-` or holds a control character (C0 or DEL, such as ^U, which would act on the shell's line) is
@@ -147,7 +147,7 @@ output. The design treats the page that shows them as untrusted (design D7,
 
 Release 1 of the agent computer (`docs/design/specs/2026-11-06-agent-computer-design.md`) is a browser in the app that a
 session's agent drives through thirteen `computer_*` tools in the agenticos MCP server and the person watches, answers and
-takes over in a pane on the Code and Sessions pages. It runs only while its `computer` surface is on
+takes over in a pane on the Code page. It runs only while its `computer` surface is on
 (`app/src/shared/surfaces.ts`): on by default since its live check on each host (2026-11-08), and with it off (a run whose
 `AOS_APP_WRITE` leaves it out) main
 starts no bridge, answers the pane's calls with a refusal and records `computer: "off"` in the vault marker, so the tools

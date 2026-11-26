@@ -14,7 +14,7 @@ import { parseMemoryMeta, type MemoryMeta } from "../data/memories";
 import { readProviderState } from "../data/aosConfig";
 import {
   KEBAB_RE, WS_RE, entryByName, flippingNotes, groupOf, linkedCounts, linkedFor, liveByWorkspace, manifestList, matchesQuery, movePlan,
-  noteHoldsStatus, spaceList, todoLinkSuggestions, workspaceArgs, workspaceSlug, SESSIONS_OFF_TEXT,
+  noteHoldsStatus, spaceList, todoLinkSuggestions, workspaceArgs, workspaceSlug,
   type Linked, type LinkedCounts, type LinkedSources, type LiveState, type LiveTerminalInput, type ManifestStatus, type ResumeRef,
 } from "../data/spacesModel";
 import { launchLine, placeOf, quickHost, repoValue, workspacePlace, type PlaceWorld, type TermHost, type TermHostChoice } from "../data/terminalLaunch";
@@ -23,10 +23,10 @@ import { shortenCwd } from "../data/hostSessions";
 import { sanitizeTerminalChoice } from "../settingsDefaults";
 import { listen } from "../data/listen";
 import type { TerminalSession } from "../data/terminalSession";
-import { env, fs, sessionsHost, shell, type HostSessionThread } from "../host";
+import { env, fs, shell } from "../host";
 import {
-  PROJECT_NOTES_DIR, entryAbs, entryPlace, freshUiState, keepPlace, panesFor, rightPaneKey, statusMenuItems, targetFor, threadSignature,
-  threadsIn, verbsOff, watchFlags,
+  PROJECT_NOTES_DIR, entryAbs, entryPlace, freshUiState, keepPlace, panesFor, rightPaneKey, statusMenuItems, targetFor,
+  verbsOff, watchFlags,
   type CloneState, type Flag, type HiddenFolder, type MenuItem, type Pane, type SpacesActions, type SpacesCtx, type SpacesUiState,
 } from "./spaces/ui";
 import { NewSpaceModal, cloneLine, newSpaceArgs, renameName, type NewSpaceRequest } from "../ui/spaces/NewSpaceModal";
@@ -42,10 +42,8 @@ import { renderPreview } from "./spaces/PreviewPane";
 import { renderHistory } from "./spaces/HistoryPane";
 import { renderLinked, renderRightFooter } from "./spaces/LinkedPane";
 
-const ALL_FLAGS: readonly Flag[] = ["snapshot", "threads", "linked", "live", "world", "map", "listing"];
+const ALL_FLAGS: readonly Flag[] = ["snapshot", "linked", "live", "world", "map", "listing"];
 const ALL_PANES: readonly Pane[] = ["list", "centre", "right"];
-/** A Sessions event that can start or end a turn (D26's live dot); the text and tool events of a running turn are not. */
-const TURN_EVENTS = new Set(["prompt", "session", "done", "error"]);
 /** The outside folders the user hid (collectors/hostSessions.js readHidden): `{schema: 1, paths: [...]}`. */
 const HIDDEN_OUTSIDE_PATH = "brain/_index/workspaces-hidden.json";
 /** How long a workspace a verb just made or renamed is waited for in the snapshot before it is selected. */
@@ -81,7 +79,6 @@ export class SpacesTab {
   private mapFor: string | null | undefined = undefined;
   private listings = new Map<string, DirEntry[] | null>();
   private listingsFor: string | null = null;
-  private threads: HostSessionThread[] = [];
   private live = new Map<string, LiveState>();
   private sources: LinkedSources = {};
   /** Each project note's frontmatter as last read, so Archive's and Restore's confirmations name only the notes whose
@@ -89,7 +86,7 @@ export class SpacesTab {
   private noteFront = new Map<string, string>();
   private linkedBy = new Map<string, Linked>();
   private counts = new Map<string, LinkedCounts>();
-  private envCache: { at: number; world: PlaceWorld; choices: TermHostChoice[]; provider: string; sessions: boolean } | null = null;
+  private envCache: { at: number; world: PlaceWorld; choices: TermHostChoice[]; provider: string } | null = null;
   private dirty = new Set<Flag>();
   private debounce: number | null = null;
   private loading = false;
@@ -210,8 +207,6 @@ export class SpacesTab {
         "session-update": (s: unknown) => { if ((s as TerminalSession | undefined)?.isExited) live(); },
       }));
     }
-    const sh = sessionsHost();
-    if (sh) this.detach.push(sh.sessions.onEvent((ev) => { if (TURN_EVENTS.has(ev.event.kind)) this.schedule(["threads"]); }));
   }
 
   private schedule(flags: Flag[]): void {
@@ -256,12 +251,6 @@ export class SpacesTab {
       this.hiddenOutside = await this.loadHiddenOutside();
       this.applyWantSelect();
     }
-    if (flags.has("threads")) {
-      // A re-list that reads the same (no thread came or went, none started or stopped) redraws nothing.
-      const next = await this.listThreads();
-      if (threadSignature(next) === threadSignature(this.threads)) changed.delete("threads");
-      this.threads = next;
-    }
     if (flags.has("linked")) this.sources = await this.loadSources();
     if (flags.has("snapshot") || flags.has("linked")) this.computeLinked();
     this.live = this.computeLive();
@@ -302,14 +291,6 @@ export class SpacesTab {
   }
 
   // ── reads ──
-
-  private async listThreads(): Promise<HostSessionThread[]> {
-    try {
-      const h = sessionsHost();
-      const r = h ? await h.sessions.list() : null;
-      return r?.ok ? r.data : [];
-    } catch { return []; }   // no sessions host (plain Node)
-  }
 
   /** What Linked reads (D27): TODO.md, the pending proposals and the project notes. */
   private async loadSources(): Promise<LinkedSources> {
@@ -377,14 +358,14 @@ export class SpacesTab {
     this.pendingReveal = { workspace: e.name };
   }
 
-  /** D26: Code terminals placed in a workspace and Sessions threads mid-turn. */
+  /** D26: Code terminals placed in a workspace. */
   private computeLive(): Map<string, LiveState> {
     let terminals: LiveTerminalInput[] = [];
     try {
       let world: PlaceWorld | null = null;
       terminals = this.plugin.terminalPool.list().map((s) => ({ place: s.meta.place ?? placeOf(s.cwd, (world ??= this.env().world)), exited: s.isExited }));
     } catch { /* no terminals */ }
-    return liveByWorkspace(this.threads.map((t) => ({ workspace: t.workspace, running: t.running })), terminals);
+    return liveByWorkspace(terminals);
   }
 
   /** Listings for the Files tree: the root, every open folder below an open one, and the folders holding a match. */
@@ -413,13 +394,13 @@ export class SpacesTab {
   }
 
   /** The world, the host choices and the provider: read from disk at most every two seconds, and again after a scan. */
-  private env(): { world: PlaceWorld; choices: TermHostChoice[]; provider: string; sessions: boolean } {
+  private env(): { world: PlaceWorld; choices: TermHostChoice[]; provider: string } {
     const c = this.envCache;
     if (c && Date.now() - c.at < 2000) return c;
     const launcher = this.plugin.termLauncher;
     let provider = "none";
     try { provider = readProviderState(this.plugin.vaultRoot())?.name ?? "none"; } catch { /* unreadable: none */ }
-    const next = { at: Date.now(), world: launcher.world(), choices: launcher.choices(), provider, sessions: this.plugin.chatAvailable() };
+    const next = { at: Date.now(), world: launcher.world(), choices: launcher.choices(), provider };
     this.envCache = next;
     return next;
   }
@@ -479,9 +460,9 @@ export class SpacesTab {
     return {
       snapshot: this.snapshot, loaded: this.loaded, entries: this.entries(), entry, ui: this.ui, now: Date.now(),
       home: env.homedir(), vault: this.plugin.vaultRoot(), world: en.world, choices: en.choices, quick: this.quickAgent(en.choices),
-      provider: en.provider, sessionsAvailable: en.sessions, live: this.live, counts: this.counts,
+      provider: en.provider, live: this.live, counts: this.counts,
       linked: entry ? this.linkedBy.get(entry.name) ?? null : null,
-      threads: this.threads, map: this.map, index: this.index, listings: this.listings,
+      map: this.map, index: this.index, listings: this.listings,
       cachedPreview: (abs) => (this.previewCache?.abs === abs ? this.previewCache.res : null),
       renderMarkdown: (el, text, sourcePath) => {
         if (this.md) void MarkdownRenderer.renderMarkdown(text, el, sourcePath, this.md);
@@ -613,10 +594,6 @@ export class SpacesTab {
       openPath: (abs) => this.openPath(abs),
       copy: (text) => this.copy(text),
       linkCodeFolder: () => this.linkCodeFolder(),
-      openSessions: (thread) => {
-        const e = this.entry();
-        if (!this.view.open({ tab: "chat", workspace: e?.name ?? null, thread: thread ?? null })) new Notice(SESSIONS_OFF_TEXT);
-      },
       openCode: () => { const e = this.entry(); this.view.open({ tab: "term", workspace: e?.name ?? null }); },
       openTab: (tab) => { this.view.open({ tab }); },
       openFile: (p) => void this.openFile(p),
@@ -670,17 +647,13 @@ export class SpacesTab {
     this.kick(["select"]);
   }
 
-  /** Resume (D7, D31, D32): a Code terminal in the workspace's group, or the thread in Sessions; never the other host. */
+  /** Resume (D7, D31; remove-sessions D5): a Code terminal in the workspace's group; never the other host. */
   private async resume(ref: ResumeRef): Promise<void> {
     const e = this.entry();
     if (!e || e.name !== ref.workspace) return;
     const en = this.env();
-    const t = targetFor({ snapshot: this.snapshot, choices: en.choices, world: en.world, sessionsAvailable: en.sessions }, e, ref);
+    const t = targetFor({ snapshot: this.snapshot, choices: en.choices, world: en.world }, e, ref);
     if (t.kind === "disabled") { new Notice(t.reason); return; }
-    if (t.kind === "sessions") {
-      if (!this.view.open({ tab: "chat", workspace: t.workspace, thread: t.thread })) new Notice(SESSIONS_OFF_TEXT);
-      return;
-    }
     try {
       // The place keeps the workspace, so the terminal joins ws:<name> in Code and the live dot holds (D7, D26).
       await this.view.launchTerminal(t.host, { picked: t.place, resume: { id: t.id }, origin: "Spaces" });
@@ -829,21 +802,20 @@ export class SpacesTab {
     this.rescan();
   }
 
-  /** Rename (D17): the new name, then the confirmation of what moves; the folder, its map and its threads follow. */
+  /** Rename (D17): the new name, then the confirmation of what moves; the folder and its map follow. */
   private rename(): void {
     const e = this.entry();
     if (!e || verbsOff(e, this.env().world)) return;
     const name = e.name;
-    const threads = threadsIn(this.threads, name).length;
     const claudeThreads = (e.sessions?.recent ?? []).filter((r) => r && r.host === "claude" && r.kind !== "app").length;
     const ownRepo = e.git?.kind === "repo";
     const o = { vault: this.plugin.vaultRoot(), home: env.homedir(), ...this.names() };
     new MoveConfirmModal(this.plugin.app, {
-      plan: movePlan("rename", e, { threads, to: "", claudeThreads, ownRepo }),
+      plan: movePlan("rename", e, { to: "", claudeThreads, ownRepo }),
       rename: {
         value: KEBAB_RE.test(name) ? name : "",
         check: (typed) => renameName(typed, name, o),
-        plan: (slug) => movePlan("rename", e, { threads, to: slug, claudeThreads, ownRepo }),
+        plan: (slug) => movePlan("rename", e, { to: slug, claudeThreads, ownRepo }),
       },
       run: async (slug) => {
         if (!slug) return "Type the new name";
@@ -859,7 +831,7 @@ export class SpacesTab {
     }).open();
   }
 
-  /** Archive (D17): into workspaces/_archive/, restorable; its threads stay listed, read-only until Restore. */
+  /** Archive (D17): into workspaces/_archive/, restorable. */
   private archive(): void {
     const e = this.entry();
     if (!e || verbsOff(e, this.env().world)) return;
@@ -867,7 +839,7 @@ export class SpacesTab {
     const taken = !!entryByName(this.snapshot, `_archive/${name}`) || this.exists(path.join("workspaces", "_archive", name));
     // The notes Archive flips: linked by workspace: or slug, and holding status/active now (cli/workspace.js).
     const notes = flippingNotes(this.linkedBy.get(name), { holds: (p) => noteHoldsStatus(this.noteFront.get(p), "active") });
-    const plan = movePlan("archive", e, { threads: threadsIn(this.threads, name).length, sessions: e.sessions?.total ?? 0, notes, archiveTaken: taken });
+    const plan = movePlan("archive", e, { sessions: e.sessions?.total ?? 0, notes, archiveTaken: taken });
     new MoveConfirmModal(this.plugin.app, {
       plan,
       run: async () => {
@@ -893,7 +865,7 @@ export class SpacesTab {
     const from = manifestList(md, "archivedFrom")[0];
     const back = from && from !== name && WS_RE.test(from) ? from : name;
     const notes = flippingNotes(this.linkedBy.get(e.name), { only: manifestList(md, "archivedNotes"), holds: (p) => noteHoldsStatus(this.noteFront.get(p), "archived") });
-    const plan = movePlan("restore", e, { threads: threadsIn(this.threads, back).length, notes, to: back });
+    const plan = movePlan("restore", e, { notes, to: back });
     new MoveConfirmModal(this.plugin.app, {
       plan,
       run: async () => {
@@ -927,7 +899,7 @@ export class SpacesTab {
   private adoptInto(row: OutsideListRow, workspace: string): void {
     const e = entryByName(this.snapshot, workspace);
     if (!e || verbsOff(e, this.env().world)) return;
-    const plan = movePlan("adopt", e, { threads: 0, sessions: row.total, folder: row.label });
+    const plan = movePlan("adopt", e, { sessions: row.total, folder: row.label });
     new MoveConfirmModal(this.plugin.app, {
       plan,
       run: async () => {

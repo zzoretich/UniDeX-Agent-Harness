@@ -13,7 +13,7 @@ import { closeComputerStores } from "./src/data/computerStore";
 import { TerminalLauncher } from "./src/data/terminalLauncher";
 import { CodeFeeds } from "./src/data/codeFeeds";
 import type { TermTab } from "./src/views/TermTab";
-import { loginsUnknown, sessionHosts, signedInHosts } from "./src/data/aosConfig";
+import { loginsUnknown, sessionHosts } from "./src/data/aosConfig";
 import type { TermHost } from "./src/data/terminalLaunch";
 import { AgenticOSSettings, AgenticOSSettingTab, DEFAULT_SETTINGS } from "./src/settings";
 import { loadSnapshot, SNAPSHOT_PATH, visibleWorkspaces } from "./src/data/snapshot";
@@ -26,7 +26,6 @@ import { LiveRunsWatcher } from "./src/data/liveRuns";
 import { COMMAND_REGISTRY, executeCommand, setSpawnContext } from "./src/data/commandRegistry";
 import { resolveNodeBinary } from "./src/data/nodeResolver";
 import { readAgenticosJson, readVaultConfig, readProviderState, claudeConfigDir as defaultClaudeConfigDir } from "./src/data/aosConfig";
-import { resolveClaudeBin } from "./src/data/claudeAsk";
 import { DEAD_SETTINGS_KEYS, rememberFilesChoice } from "./src/settingsDefaults";
 import { runAos, runAosJson } from "./src/data/aosRun";
 import type { AosResult, AosJsonResult } from "./src/data/aosRun";
@@ -39,7 +38,6 @@ import type { FixAction } from "./src/data/fixQueue";
 import { buildOmniItems } from "./src/data/omni";
 import { OmniModal } from "./src/ui/OmniModal";
 import { TourController } from "./src/tour/controller";
-import { SESSION_INDEX_PATH, hasHistory } from "./src/data/sessionHistory";
 import { runLaunchSequence, type LaunchDeps, type LaunchStep } from "./src/ui/launchSequence";
 import * as path from "path";
 import { env, fs, spawn } from "./src/host";
@@ -114,11 +112,11 @@ export default class AgenticOSPlugin extends Plugin {
 
     // commands
     this.addCommand({ id: "open-workbench",       name: "Open Workbench",        callback: () => { void this.activate(VIEW_TYPE_WORKBENCH); } });
-    for (const t of ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "connectors", "agents", "agent-teams", "chat", "term", "settings"] as const) {
+    for (const t of ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "connectors", "agents", "agent-teams", "term", "settings"] as const) {
       // The Brain tab keeps the id "memory" (brain-hub D16), so its command id holds and only the name changes. Agent
       // Workspace keeps "agent-teams", and the Agents command, kept, lands there too (agent-workspace D3).
       const name = t === "todo" ? "To-Do" : t === "agent-teams" ? "Agent Workspace" : t === "agents" ? "Agents (Agent Workspace)"
-        : t === "chat" ? "Sessions" : t === "term" ? "Code" : t === "memory" ? "Brain" : `${t[0].toUpperCase()}${t.slice(1)}`;
+        : t === "term" ? "Code" : t === "memory" ? "Brain" : `${t[0].toUpperCase()}${t.slice(1)}`;
       this.addCommand({ id: `open-workbench-${t}`, name: `Open Workbench: ${name}`,
         callback: () => { void this.openWorkbenchTab(t); } });
     }
@@ -195,9 +193,9 @@ export default class AgenticOSPlugin extends Plugin {
       // for 5 minutes "crashed" (spec 2026-09-24-no-duplicate-sessions D1). The live watcher drops a run
       // when its file goes. Off when telemetry is disabled: the plugin then writes nothing under agent-runs.
       // AOS_HOST / CLAUDE_PROJECT_DIR blank: an Obsidian started from a session terminal must not look like a hook.
-      // It also refreshes the hosts' sign-in, which Sessions follows (local-first A17): so with telemetry off it still runs
-      // while provider local has no login recorded for an enabled host (a fresh install), and then writes nothing else.
-      // Sessions joins the rail when the answer lands in provider-state.json (WorkbenchView.refreshRailHosts).
+      // It also refreshes the hosts' sign-in, which Code's launcher and Spaces follow (local-first A17): so with telemetry
+      // off it still runs while provider local has no login recorded for an enabled host (a fresh install), and then
+      // writes nothing else.
       if (this.telemetryOn() || (this.systemConfig().provider === "local" && loginsUnknown(readAgenticosJson(this.claudeConfigDir()), readProviderState(this.vaultRoot())))) {
         this.runBrainScript("brain/scripts/reconcile-sessions.js", [], undefined, { env: { AOS_HOST: "", CLAUDE_PROJECT_DIR: "" }, quiet: true });
       }
@@ -278,7 +276,7 @@ export default class AgenticOSPlugin extends Plugin {
    * Claude Code config dir: settings → agenticos.json → $CLAUDE_CONFIG_DIR → ~/.claude.
    * The tail delegates to aosConfig.claudeConfigDir() so this method and the data readers can
    * never disagree, and this method is the single source every plugin-side agenticos.json read
-   * passes as `configDir` (loadSettings, PulseTab, SystemDrawer, ChatTab, claudeBin) — Ruling A6.
+   * passes as `configDir` (loadSettings, PulseTab, SystemDrawer) — Ruling A6.
    */
   claudeConfigDir(): string {
     if (this.settings.claudeConfigDir) return this.settings.claudeConfigDir;
@@ -320,45 +318,6 @@ export default class AgenticOSPlugin extends Plugin {
    * its runtime dialog; Go local, What's new or the welcome tour and Getting started follow, one at a time.
    */
   runLaunchSequence(d: Omit<LaunchDeps, "plugin">): Promise<LaunchStep[]> { return runLaunchSequence({ ...d, plugin: this }); }
-
-  /** Sessions follows the hosts (local-first A17): an enabled host is signed in, by the login caches the runtime keeps in
-   *  brain/_index/provider-state.json, whatever the background provider (the local engine may be down). */
-  chatAvailable(): boolean {
-    return signedInHosts(readAgenticosJson(this.claudeConfigDir()), readProviderState(this.vaultRoot())).length > 0;
-  }
-
-  /** session-index.json's size and time when it was last read, and whether it named a session History lists. */
-  private historyCache: { mtime: number; size: number; has: boolean } | null = null;
-
-  /** Whether Sessions ▸ History has a past session to list (install-import B11): the index the scan keeps names one.
-   *  Read again only when the file changed. */
-  historyOnDisk(): boolean {
-    try {
-      const file = path.join(this.vaultRoot(), SESSION_INDEX_PATH);
-      const st = fs.statSync(file);
-      const c = this.historyCache;
-      if (c && c.mtime === st.mtimeMs && c.size === st.size) return c.has;
-      const has = hasHistory(fs.readFileSync(file, "utf8"));
-      this.historyCache = { mtime: st.mtimeMs, size: st.size, has };
-      return has;
-    } catch { return false; }
-  }
-
-  /** Sessions is on the rail when an enabled host is signed in (local-first A17), or when History has a past session to
-   *  show, which needs no host (install-import B11, §5.6): a Mac with no host, or one signed out, still sees its history. */
-  sessionsShown(): boolean {
-    return this.chatAvailable() || this.historyOnDisk();
-  }
-
-  /**
-   * claude CLI for the Chat tab's headless calls: agenticos.json `claude.bin` → provider-state
-   * bin → ~/.local/bin/claude → PATH. The agenticos.json read is threaded through
-   * claudeConfigDir() so the settings override reaches the recorded path (Ruling A6).
-   */
-  claudeBin(): string {
-    const configDir = this.claudeConfigDir();
-    return resolveClaudeBin(this.vaultRoot(), { readAgenticosJson: () => readAgenticosJson(configDir) });
-  }
 
   // ── activate any view by type ────────────────────────────────────────
 

@@ -17,8 +17,7 @@ test("after Code and Agent Workspace, the content area carries none of their cla
   const { win } = app();
   await openTab(win, "agent-teams");
   await openTab(win, "term");
-  // Sessions (chat) is on the rail only with a model provider; variants.spec.ts covers it.
-  for (const t of RAIL_ORDER.filter((x) => x !== "term" && x !== "agent-teams" && x !== "chat")) {
+  for (const t of RAIL_ORDER.filter((x) => x !== "term" && x !== "agent-teams")) {
     await openTab(win, t);
     const cls = ((await C().getAttribute("class")) ?? "").split(/\s+/);
     expect(cls, t).toContain("aos-wb-content");

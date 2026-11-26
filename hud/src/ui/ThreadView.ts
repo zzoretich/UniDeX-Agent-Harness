@@ -168,6 +168,6 @@ export function renderDiff(parent: HTMLElement, text: string, truncated: boolean
     const kind = /^(diff |index |--- |\+\+\+ )/.test(line) ? " is-meta" : line.startsWith("@@") ? " is-hunk" : line.startsWith("+") ? " is-add" : line.startsWith("-") ? " is-del" : "";
     pre.createSpan({ cls: `aos-ss-diffline${kind}`, text: line || " " });
   }
-  if (lines.length > max) parent.createDiv({ cls: "aos-ss-note", text: `The first ${max} of ${lines.length} lines; Review changes shows them all.` });
+  if (lines.length > max) parent.createDiv({ cls: "aos-ss-note", text: `The first ${max} of ${lines.length} lines; Diff shows them all.` });
   if (truncated) parent.createDiv({ cls: "aos-ss-note", text: "The diff is longer than this; only its first 2 MB are shown." });
 }

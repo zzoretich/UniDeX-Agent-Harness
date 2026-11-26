@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ALIAS_REASON, aliasCatalog,
   ACCESS_LEVELS, CODEX_ACCESS_NOTE, DEFAULT_ACCESS, EFFORT_TITLE, SESSION_EFFORTS, VAULT_EFFORTS, accessHostLine, accessLabel,
   catalogHost, catalogSource, chipText, choiceText, commandQuery, commandTyping, countsText, defaultChoice, diffTotals,
   doneFooter, doneLine, durationText, effortLabel, effortsFor, fileCounts, fileStatusLabel, filterCommands, findModel, groupThreads,
@@ -604,4 +605,18 @@ test("a Computer pane line is a row of its turn, in order, with the activity log
   assert.ok(!timelineRows(events).some((r) => (r.kind as string) === "computer"), "the first timeline's kinds stay as they were");
   const long = threadRows([ev("computer", 2, { text: `Opened ${"x".repeat(600)}\nnext` })])[0];
   assert.ok(long.kind === "computer" && long.text.length === 400 && !long.text.includes("\n"), "one line, clipped");
+});
+
+test("aliasCatalog: Claude's aliases at Vault's levels, Codex's own default, both marked as a short list", () => {
+  const now = new Date("2026-10-07T12:00:00Z");
+  const c = aliasCatalog(now);
+  assert.equal(c.fetchedAt, now.toISOString());
+  assert.deepEqual(c.hosts.claude!.models.map((m) => m.id), ["default", "opus", "fable", "sonnet", "haiku"]);
+  assert.ok(c.hosts.claude!.models.every((m) => m.main && m.efforts.join() === "low,medium,high,xhigh,max"));
+  assert.deepEqual(c.hosts.codex!.models, []);
+  assert.equal(c.hosts.claude!.ok, false);
+  assert.equal(c.hosts.codex!.reason, ALIAS_REASON);
+  assert.equal(aliasCatalog(now, "why").hosts.claude!.reason, "why");
+  c.hosts.claude!.models[0].efforts.push("ultra");
+  assert.equal(aliasCatalog(now).hosts.claude!.models[0].efforts.length, 5, "each call is a fresh copy");
 });

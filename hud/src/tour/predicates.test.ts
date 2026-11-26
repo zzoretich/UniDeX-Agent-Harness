@@ -2,20 +2,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PREDICATES, boldRuns, fillText, holds, hostName, isPredicate, type TourContext } from "./predicates";
 
-const ctx = (hosts: TourContext["hosts"], chat = false, checklist = false): TourContext => ({ hosts, chat, checklist });
+const ctx = (hosts: TourContext["hosts"], checklist = false): TourContext => ({ hosts, checklist });
 const CLAUDE = ctx(["claude"]);
-const CODEX = ctx(["codex"], true);
-const BOTH = ctx(["claude", "codex"], true, true);
+const CODEX = ctx(["codex"]);
+const BOTH = ctx(["claude", "codex"], true);
 const NONE = ctx([]);
 
 test("each predicate on each kind of install (tour C8)", () => {
   const table: Array<[string, TourContext, boolean]> = [
     ["hasHost:claude", CLAUDE, true], ["hasHost:claude", CODEX, false], ["hasHost:claude", BOTH, true], ["hasHost:claude", NONE, false],
     ["hasHost:codex", CLAUDE, false], ["hasHost:codex", CODEX, true], ["hasHost:codex", BOTH, true],
-    ["chatAvailable", CLAUDE, false], ["chatAvailable", CODEX, true],
-    // Sessions on the rail: a host signed in, or past sessions for History (install-import B11); unset, it follows chat.
-    ["sessionsShown", CLAUDE, false], ["sessionsShown", CODEX, true], ["sessionsShown", { ...NONE, sessions: true }, true],
-    ["sessionsShown", { ...CODEX, sessions: false }, false],
+    // remove-sessions D13: chatAvailable and sessionsShown went with the tab, so they never hold.
+    ["chatAvailable", CODEX, false], ["sessionsShown", CODEX, false],
     ["codexOnly", CODEX, true], ["codexOnly", BOTH, false], ["codexOnly", NONE, false],
     ["noHost", NONE, true], ["noHost", CLAUDE, false],
     ["checklistShown", BOTH, true], ["checklistShown", CLAUDE, false],
@@ -30,7 +28,7 @@ test("each predicate on each kind of install (tour C8)", () => {
 test("no when always holds; ! negates; an unknown predicate never holds", () => {
   assert.equal(holds(undefined, NONE), true);
   assert.equal(holds("", NONE), true);
-  assert.equal(holds("!chatAvailable", CLAUDE), true);
+  assert.equal(holds("!codexOnly", CLAUDE), true);
   assert.equal(holds("!hasHost:codex", CODEX), false);
   assert.equal(holds("hasHost:other", BOTH), false);
   assert.equal(holds("!hasHost:other", BOTH), false);

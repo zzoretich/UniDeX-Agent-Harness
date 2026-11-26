@@ -23,7 +23,7 @@ import { listen } from "../data/listen";
 import { TERMINAL_FONT, currentTheme, onThemeChange, xtermTheme } from "./theme";
 import { NewTerminalMenu, type NewTerminalActions } from "./NewTerminalMenu";
 import { Notice } from "obsidian";
-import { TermList } from "./TermList";
+import { HISTORY_KEY, TermList } from "./TermList";
 import { TermComposer } from "./TermComposer";
 import { TermFind } from "./TermFind";
 import { FIND_LIMIT } from "../data/termFind";
@@ -32,6 +32,7 @@ import { openWebLink } from "./openWebLink";
 import { sessionForLink } from "../data/linkRoute";
 import { ConfirmModal } from "./ConfirmModal";
 import { groupKey, scopeOf, stepRow } from "../data/termGroups";
+import type { HistoryRow } from "../data/sessionHistory";
 import { restartKeepingOld, HandOverFailed, HAND_OVER_KEPT } from "../data/terminalRestart";
 import { CodeSidebarModel } from "../data/codeSidebarModel";
 import { vaultPlace, workspacePlace, type Place, type TermAccess } from "../data/terminalLaunch";
@@ -72,8 +73,10 @@ export interface TerminalPanelOptions {
   deck?: boolean;
   /** The deck's Open workspace on a workspace group: Spaces on that workspace (spaces-redesign D12). */
   openWorkspace?: (name: string) => void;
-  /** The sidebar's All history: Sessions ▸ History. */
+  /** The sidebar's All history: shows Code ▸ History (remove-sessions D3). */
   openHistory?: () => void;
+  /** History's Resume: the row's host resumes it in a new terminal at its place (WorkbenchView.launchTerminal). */
+  resumeHistory?: (r: HistoryRow) => Promise<void>;
   /** The top bar's Files button: the Files tab at a vault workspace's folder (vault-relative; code-chat C8). */
   openFiles?: (folder: string) => void;
 }
@@ -140,9 +143,13 @@ export class TerminalPanel {
         this.openLink(href, sessionForLink(view, o ? codeSession(o) : null));
       },
       renderTabs: () => this.renderTabs(),
+    }, {
+      history: () => this.model.history(),
+      resume: (r) => void this.resumeHistory(r),
+      close: () => this.closeHistory(),
     });
     this.panes = new CodePanes({
-      activeSession: () => (this.stage.past ? undefined : this.activeSession()),
+      activeSession: () => (this.stage.covered() ? undefined : this.activeSession()),
       placeOf: (s) => this.model.placeOfSession(s),
       computer: () => this.computer,
       openFiles: opts.openFiles,
@@ -188,7 +195,12 @@ export class TerminalPanel {
         openPast: (h) => this.stage.showPast({ key: h.key, host: h.host, id: h.id, title: h.title, place: h.place, resume: h.resume }),
         openClosed: (r) => { if (r.sessionId && r.host !== "shell") this.stage.showPast({ key: `closed:${r.host}:${r.sessionId}`, host: r.host, id: r.sessionId, title: r.title, place: r.place, resume: { state: "on", place: r.place, hint: "" } }); },
         showMore: (key) => { this.model.extra[key] = (this.model.extra[key] ?? 0) + 10; this.renderTabs(); },
-        allHistory: this.opts.openHistory ? () => this.opts.openHistory?.() : undefined,
+        // A toggle, as its aria-pressed says: open, the focus goes to History's filter; pressed again, History closes.
+        allHistory: this.opts.openHistory ? () => {
+          if (this.stage.historyShown()) { this.closeHistory(); return; }
+          this.opts.openHistory?.();
+          this.stage.history?.focusFilter();
+        } : undefined,
       }, () => this.renderTabs());
       this.model.start();
       frame = host.createDiv({ cls: "aos-term-main", attr: { "data-tour": "code-main" } });
@@ -362,7 +374,7 @@ export class TerminalPanel {
 
   /** Keys to the selected terminal; in its chat view the terminal is hidden, so nothing takes them. */
   focus(): void {
-    if (!this.activeId || this.stage.past || this.stage.chatShown()) return;
+    if (!this.activeId || this.stage.covered() || this.stage.chatShown()) return;
     const b = this.bindings.get(this.activeId);
     b?.term.focus();
   }
@@ -371,8 +383,36 @@ export class TerminalPanel {
   toggleView(): void {
     const s = this.activeSession();
     const feeds = this.plugin.codeFeeds;
-    if (this.stage.past || !s || !feeds || !this.stage.chat || !hasChat(s.meta) || !feeds.on()) return;
+    if (this.stage.covered() || !s || !feeds || !this.stage.chat || !hasChat(s.meta) || !feeds.on()) return;
     this.setView(feeds.view(s.id) === "chat" ? "terminal" : "chat");
+  }
+
+  /** Code ▸ History over the stage (remove-sessions D3): the sidebar's All history, and open({ tab: "term", pane:
+   *  "history" }). The caches are looked at again at once. */
+  showHistory(): void {
+    if (!this.opts.deck || !this.host) return;
+    this.model.refreshHistory(true);
+    this.stage.showHistory();
+    this.renderTabs();
+  }
+
+  /** History's Close, and a link to Code that names no pane: back to the selected terminal. */
+  closeHistory(): void {
+    if (!this.stage.historyShown()) return;
+    this.stage.closeHistory();
+    this.renderTabs();
+    this.focus();
+  }
+
+  /** History's Resume: a new terminal running the row's resume line; History gives way to it. */
+  private async resumeHistory(r: HistoryRow): Promise<void> {
+    if (r.resume.state !== "on" || !this.opts.resumeHistory) return;
+    try {
+      await this.opts.resumeHistory(r);
+      this.closeHistory();
+    } catch (err) {
+      new Notice(`Resume unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** Makes a pool session the visible one — also for a session created outside the panel (WorkbenchView.runInTerm). */
@@ -424,14 +464,14 @@ export class TerminalPanel {
   /** Opens the find bar on the selected terminal (⌘F); false when there is no terminal to find in. */
   openFind(): boolean {
     const b = this.activeId ? this.bindings.get(this.activeId) : undefined;
-    if (!this.finder || !b || this.stage.past || this.stage.chatShown()) return false;
+    if (!this.finder || !b || this.stage.covered() || this.stage.chatShown()) return false;
     this.finder.open(b.search);
     return true;
   }
 
   /** Closes the selected terminal (⇧⌘W), asking first while an agent runs in it. A past conversation shown read-only is
    *  not a terminal: the one hidden under it stays. */
-  closeActive(): void { if (this.activeId && !this.stage.past) this.closeSession(this.activeId); }
+  closeActive(): void { if (this.activeId && !this.stage.covered()) this.closeSession(this.activeId); }
 
   /** A plain shell in the default place (the old "+ new"). */
   async createNewSession(): Promise<void> {
@@ -463,8 +503,9 @@ export class TerminalPanel {
       const sidebar = this.model.rebuild();
       this.describeRows();
       const counts = this.model.counts();
-      this.list.render(sidebar, this.activeId, counts, this.model.scope, this.stage.past?.key ?? null);
+      this.list.render(sidebar, this.activeId, counts, this.model.scope, this.stage.historyShown() ? HISTORY_KEY : this.stage.past?.key ?? null);
       this.topBar.renderHead();
+      this.stage.history?.update();
       return;
     }
     this.tabsEl.empty();
@@ -664,7 +705,7 @@ export class TerminalPanel {
     requestAnimationFrame(() => {
       this.refit();
       if (this.newMenu?.isOpen() || this.typingElsewhere()) return;
-      if (this.stage.past) return;
+      if (this.stage.covered()) return;
       if (this.stage.chatShown()) { if (this.activeId === sess.id) this.composer?.focus(); return; }
       b?.term.focus();
     });

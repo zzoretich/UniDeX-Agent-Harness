@@ -2,6 +2,17 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.9.0",
+      "entries": [
+        {
+          "id": "sessions-retired",
+          "title": "Sessions is now part of Code",
+          "body": "The Sessions tab is gone: Code runs Claude Code and Codex in real terminals with a chat view, and History moved into Code, behind All history at the foot of its list. Vault chat is gone too; ask about your notes in any Code session. Old links to Sessions open Code.",
+          "steps": ["code.history"]
+        }
+      ]
+    },
+    {
       "version": "2.8.0",
       "entries": [
         {
@@ -19,7 +30,7 @@
           "id": "session-browser",
           "title": "Every session has its own browser",
           "body": "Each Code terminal and each Sessions thread now has its own browser, off until you turn it on, so two sessions in one folder no longer share tabs. Links you click in a session, and pages its programs open, come to that browser. The agent has more ways to drive it, and a pointer with the session's name shows where it is about to click, hover or type. Take over stops the agent's driving at once. Drag the browser's bar, or pick Side, Half or Wide, to make it bigger.",
-          "steps": ["code.computer", "code.computer-power", "code.computer-size", "sessions.computer"]
+          "steps": ["code.computer", "code.computer-power", "code.computer-size"]
         }
       ]
     },
@@ -41,7 +52,7 @@
           "id": "computer-pane",
           "title": "The Computer pane",
           "body": "A browser beside the terminal on Code and beside the reader on Sessions, which a session's agent drives through its computer tools on Claude Code and Codex. It reads pages freely, asks you before clicking or typing on a site you haven't marked and before anything irreversible, and Take over stops it at once. New tabs open DuckDuckGo, and words typed in the address bar search it. Settings ▸ Computer turns it off.",
-          "steps": ["code.computer", "sessions.computer"]
+          "steps": ["code.computer"]
         }
       ]
     },
@@ -138,7 +149,7 @@
           "id": "sessions-history",
           "title": "Sessions ▸ History",
           "body": "Every Claude Code and Codex session on this Mac, by day and newest first, with its host, workspace and a one-line summary once the history import has digested it. Resume reopens one in a Code terminal on its own host.",
-          "steps": ["sessions-history"]
+          "steps": ["code.history"]
         },
         {
           "id": "guided-tour",

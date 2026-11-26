@@ -35,10 +35,25 @@ export class HistoryCache {
   private checkedAt: number | null = null;
   /** The one trailing check a throttled refresh arms, so a change skipped by the throttle shows without another render. */
   private trailing: unknown = null;
+  /** Whether a read has landed (Code ▸ History's loading line, remove-sessions D3), and why the last one failed. */
+  private landed = false;
+  private failure: string | null = null;
+  /** Whether an agent host was on and ready at the last look (Code ▸ History's no-host note): read with the rows, so a
+   *  render asking for it reads no config (remove-sessions, final review I1). */
+  private ready = false;
 
   constructor(private readonly src: HistorySources, private readonly onChange: () => void) {}
 
   rows(): HistoryRow[] { return this.current; }
+
+  /** False until the first read of the caches landed, failed or not. */
+  loaded(): boolean { return this.landed; }
+
+  /** The last read's failure, or null once a read went through. */
+  error(): string | null { return this.failure; }
+
+  /** Whether an agent host (not the shell) was on and ready when the caches were last looked at. */
+  hostReady(): boolean { return this.ready; }
 
   /** Stops the trailing check (the panel closing). */
   dispose(): void { this.clearTrailing(); }
@@ -68,14 +83,19 @@ export class HistoryCache {
     if (this.data && this.data.stamp === stamp) { this.rebuild(); return; }
     const seq = ++this.seq;
     void (async () => {
-      let failed = false;
+      let failed: string | null = null;
       const read = async (f: string): Promise<string | null> => {
-        try { return fs.existsSync(f) ? await fs.promises.readFile(f, "utf8") : null; } catch { failed = true; return null; }
+        try { return fs.existsSync(f) ? await fs.promises.readFile(f, "utf8") : null; } catch (e) { failed = e instanceof Error ? e.message : String(e); return null; }
       };
       const [index, digests] = await Promise.all(files.map(read));
       if (seq !== this.seq) return;
+      const changed = !this.landed || this.failure !== failed;
+      this.landed = true;
+      this.failure = failed;
       // A read that failed is tried again at the next refresh.
       this.data = { stamp: failed ? "" : stamp, sessions: parseSessionIndex(index), digests: parseDigests(digests) };
+      // A first read or a failure that came or went is news even when the rows are the same (none).
+      if (changed) this.built = "";
       this.rebuild();
     })();
   }
@@ -84,6 +104,7 @@ export class HistoryCache {
     if (!this.data) return;
     let hosts: ReturnType<HistorySources["hosts"]>;
     try { hosts = this.src.hosts(); } catch { hosts = { choices: [], world: { vault: this.src.vault(), home: "", workspaces: [], links: {} } }; }
+    this.ready = hosts.choices.some((c) => c.host !== "shell" && !c.hidden && c.ready);
     const sig = `${this.data.stamp}|${JSON.stringify(hosts.choices)}|${hosts.world.workspaces.join(",")}|${JSON.stringify(hosts.world.links)}`;
     if (sig === this.built) return;
     this.built = sig;

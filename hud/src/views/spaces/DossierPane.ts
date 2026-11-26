@@ -112,7 +112,7 @@ function renderActions(head: HTMLElement, ctx: SpacesCtx, e: WorkspaceEntry): vo
   ctx.setIcon(goIco, "play");
   go.createSpan({ text: main.label });
   go.addEventListener("click", () => main.run?.());
-  // The caret is off only when every row of its menu is (a hidden entry with no Sessions thread): a Codex-only vault
+  // The caret is off only when every row of its menu is (a hidden entry): a Codex-only vault
   // whose last thread is Claude Code's still starts a Codex session from it. With the main half off the pair reads as
   // one outlined control (styles.css .aos-spc-split:has(…:disabled)).
   const items = splitMenuItems(ctx, e);

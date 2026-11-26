@@ -1,6 +1,7 @@
 // CodeStage — the Code deck's stage (spec 2026-11-09-code-chat C1, C3, C5, C6, C13): the CodeChat that lies over the
 // selected terminal's body (which stays laid out, hidden, at its last size), the read-only chat of a past conversation, the
-// view that shows, and the composer's place under the stage or inside the chat's column. TerminalPanel owns the terminals;
+// view that shows, and the composer's place under the stage or inside the chat's column. Code ▸ History lies over the stage
+// the same way (remove-sessions D3). TerminalPanel owns the terminals;
 // the stage asks it for the selected one through its host.
 
 import type AgenticOSPlugin from "../../main";
@@ -14,6 +15,7 @@ import type { ChatState } from "../data/codeChat";
 import type { Span } from "../data/ansiSpans";
 import type { ChatCard } from "../data/termScreen";
 import { CodeChat } from "./CodeChat";
+import { CodeHistory, type CodeHistoryHost } from "./CodeHistory";
 import { codeSession } from "../data/computerStore";
 import { sessionForLink } from "../data/linkRoute";
 import type { TermComposer } from "./TermComposer";
@@ -52,7 +54,10 @@ export class CodeStage {
   private chatFor: string | null = null;
   private drawn: { state: ChatState; why: string | null; status: Span[][] | null; card: ChatCard | null } | null = null;
 
-  constructor(private plugin: AgenticOSPlugin, private host: CodeStageHost) {}
+  /** Code ▸ History (remove-sessions D3), over the stage while it shows. */
+  history: CodeHistory | null = null;
+
+  constructor(private plugin: AgenticOSPlugin, private host: CodeStageHost, private historyHost: CodeHistoryHost) {}
 
   /** Mounts the stage in the deck's main column: the terminal's body, with the chats over it. Returns the body. */
   mount(frame: HTMLElement): HTMLElement {
@@ -86,6 +91,8 @@ export class CodeStage {
       linkSession: () => sessionForLink("past", null),
       context: () => ({ host: this.past?.host ?? "claude", root: this.past?.place.dir ?? null }),
     });
+    this.history = new CodeHistory(this.historyHost);
+    this.history.mount(this.stageEl);
     return body;
   }
 
@@ -94,6 +101,8 @@ export class CodeStage {
     this.chat = null;
     this.pastChat?.destroy();
     this.pastChat = null;
+    this.history?.destroy();
+    this.history = null;
     this.past = null;
     this.pastData = null;
     this.pastSeq++;
@@ -109,6 +118,7 @@ export class CodeStage {
   showPast(sel: PastSel): void {
     const chat = this.pastChat;
     if (!chat) return;
+    this.closeHistory();
     const seq = ++this.pastSeq;
     this.past = sel;
     this.pastData = null;
@@ -132,13 +142,31 @@ export class CodeStage {
     this.pastChat.show(pastState(this.pastData, this.past.host, this.past.place.dir));
   }
 
-  /** A terminal is selected (or none): the past conversation goes. */
+  /** A terminal is selected (or none): the past conversation goes, and History with it. */
   clearPast(): void {
+    this.closeHistory();
     if (!this.past) return;
     this.past = null;
     this.pastData = null;
     this.pastSeq++;
   }
+
+  // ── Code ▸ History (remove-sessions D3) ──
+
+  /** Shows History over the stage: the past conversation goes. */
+  showHistory(): void {
+    if (!this.history) return;
+    if (this.past) { this.past = null; this.pastData = null; this.pastSeq++; }
+    this.history.show();
+    this.host.renderTabs();
+  }
+
+  closeHistory(): void { this.history?.hide(); }
+
+  historyShown(): boolean { return this.history?.shown ?? false; }
+
+  /** Something lies over the selected terminal (a past conversation or History): keys, find and the composer leave it. */
+  covered(): boolean { return !!this.past || this.historyShown(); }
 
   // ── the chat view (spec 2026-11-09-code-chat C1, C3, C5, C13) ──
 
@@ -159,11 +187,13 @@ export class CodeStage {
     const composer = this.host.composer();
     const frame = this.frameEl;
     if (!chat || !stage || !composer || !frame) return;
-    // A past conversation lies over the stage like the chat does, with no composer under it.
+    // A past conversation, or History, lies over the stage like the chat does, with no composer under it.
     const past = !!this.past;
+    const history = this.historyShown();
     stage.toggleClass("is-past", past);
+    stage.toggleClass("is-history", history);
     this.pastChat?.setVisible(past);
-    if (past) { chat.setVisible(false); return; }
+    if (past || history) { chat.setVisible(false); return; }
     const on = this.chatShown();
     const was = stage.hasClass("is-chat");
     stage.toggleClass("is-chat", on);
@@ -188,7 +218,7 @@ export class CodeStage {
   renderChat(force = false): void {
     const chat = this.chat;
     const s = this.host.activeSession();
-    if (!chat || !s || this.past || !this.chatShown()) return;
+    if (!chat || !s || this.covered() || !this.chatShown()) return;
     const feed = this.plugin.codeFeeds?.get(s.id) ?? null;
     if (this.chatFor !== s.id) { chat.reset(); this.chatFor = s.id; this.drawn = null; }
     const state = feed?.state ?? NO_CHAT;

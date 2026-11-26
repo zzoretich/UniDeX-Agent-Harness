@@ -114,13 +114,10 @@ Tools; accept. Then `git clone https://github.com/zzoretich/UniDeX-Agent-Harness
 - [ ] In Claude Code: say `sitrep` (the `persona-sitrep` skill — also reachable as `/agenticos:persona-sitrep`; there is no `/sitrep` command) → it renders the Output shape with one recommended action; `review persona flags` (the `persona-flag-closer` skill) either reports `Nothing pending — no proposals, no flags, no new failures.` or lists whatever the monitor duty flagged. Both pass: the live run in the box above rewrote `STATE.md`, so its `## Flags` may legitimately hold open items (a duty that failed leaves a FAILED flag there).
 
 ## 7. The Workbench under each provider
-- [ ] Provider `local` with Ollama running: Pulse, Files, Spaces, Brain, Runs, Sessions and Code (a live shell) all
-  render; in Sessions, Vault answers on this Mac (its line reads `This Mac (<model>, no spend)`), and Settings ▸ Local
-  engine shows the engine answering, the model downloaded and today's local calls.
-- [ ] `aos config set ai.chat host` with Claude logged in: Vault's line reads `claude (claude-opus-5, capped)`, each
-  answer shows a per-message cost, and `aos status` counts them on the `(reasoner)` line. `aos config unset ai.chat` puts it back.
-- [ ] `aos provider auto`, then `aos provider none`: nothing red; Sessions stays on the rail (it follows the signed-in
-  hosts, not the provider). `aos provider local` puts it back.
+- [ ] Provider `local` with Ollama running: Pulse, Files, Spaces, Brain, Runs and Code (a live shell) all render, and
+  Settings ▸ Local engine shows the engine answering, the model downloaded and today's local calls.
+- [ ] `aos provider auto`, then `aos provider none`: nothing red; Code and its History work as before (they follow the
+  signed-in hosts, not the provider). `aos provider local` puts it back.
 
 
 ## 8. The update from the previous release (the maintainer's Mac)

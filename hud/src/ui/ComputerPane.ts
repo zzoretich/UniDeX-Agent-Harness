@@ -1,4 +1,4 @@
-// ComputerPane — the Computer pane on the Code and Sessions pages (agent-computer D4, D5, D27, D29, D32, D35; release 1,
+// ComputerPane — the Computer pane on the Code page (remove-sessions D8: Sessions' page went with the tab) (agent-computer D4, D5, D27, D29, D32, D35; release 1,
 // the Browser only). Docked right of the terminal or the reader: resizable, collapsible, and popped out to its own window.
 // Top to bottom: the header (the Browser tab, the place, pop-out, collapse); the browser's tabs; the address bar; the ask
 // cards and, under them, the view's rectangle, which main fills with the native browser view (so a card is never under
@@ -43,7 +43,6 @@ const POPPED_LINE = "Popped out to its own window. Closing that window brings th
 /** The line shown when no session is followed, unless the page says why (`follow`'s `none`). */
 const NONE_LINE: Record<ComputerPage, string> = {
   code: "Select a terminal to see its browser.",
-  chat: "Open a session to see its browser.",
 };
 const HELP_TEXT = "Agents use this browser through the Computer tools: it asks you before anything irreversible, and Take over "
   + "stops them at once. Other browser and computer-use tools (Codex's built-in ones, Claude in Chrome, Playwright, "
@@ -225,7 +224,7 @@ export class ComputerPane {
     if (this.el || this.destroyed) return;
     const page = this.o.page;
     const root = parent.createEl("aside", { cls: "aos-cp", attr: { "aria-label": "Computer", "data-page": page } });
-    // Esc in the pane is the pane's: it never reaches the page around it (Sessions stops a running turn on Esc).
+    // Esc in the pane is the pane's: it never reaches the page around it (Code's chat stops a running turn on Esc).
     root.addEventListener("keydown", (e) => { if (e.key === "Escape") e.stopPropagation(); });
     const handle = root.createDiv({
       cls: "aos-cp-handle",
@@ -352,7 +351,6 @@ export class ComputerPane {
     }));
     this.cleanups.push(this.store.subscribe(() => this.onStore()));
     this.cleanups.push(this.store.onReveal(() => this.takeReveal()));
-    this.store.noteShown(page);
     this.render();
   }
 

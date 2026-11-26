@@ -10,10 +10,9 @@ import { shortAllowedTools, workspacePlace } from "../../data/terminalLaunch";
 import type { LinkedCounts, Linked, LiveState, ManifestStatus, ResumeRef, ResumeTarget, HistoryFilter, SpaceGroupKey, StatusPill } from "../../data/spacesModel";
 import { lastThread } from "../../data/hostSessions";
 import type { OutsideListRow } from "../../data/hostSessions";
-import { WS_RE, newSessionRows, resumeTarget, sessionsLink, statusPill, SESSIONS_OFF_TEXT } from "../../data/spacesModel";
+import { WS_RE, newSessionRows, resumeTarget, statusPill } from "../../data/spacesModel";
 import type { FileFilter, MapIndex, WorkspaceMap } from "../../data/workspaceMaps";
 import type { DirEntry, PreviewResult } from "../../data/workspaceFiles";
-import type { HostSessionThread } from "../../host";
 import { SNAPSHOT_PATH } from "../../data/snapshot";
 import { MAPS_DIR } from "../../data/workspaceMaps";
 import { TODO_PATH } from "../../data/todos";
@@ -72,7 +71,6 @@ export interface SpacesActions {
   openPath(abs: string): void;
   copy(text: string): void;
   linkCodeFolder(): void;
-  openSessions(thread?: string | null): void;
   openCode(): void;
   openTab(tab: string): void;
   /** A vault-relative file: in the app's editor when it is a vault file, else with the system's app. */
@@ -143,13 +141,9 @@ export interface SpacesCtx {
   quick: "claude" | "codex" | null;
   /** The resolved model provider's name; "none" when there is none (D33). */
   provider: string;
-  /** Whether the Sessions tab is shown (D32). */
-  sessionsAvailable: boolean;
   live: Map<string, LiveState>;
   counts: Map<string, LinkedCounts>;
   linked: Linked | null;
-  /** The app's Sessions threads (D32): "All n in Sessions" counts the selected workspace's. */
-  threads: HostSessionThread[];
   map: WorkspaceMap | null;
   index: MapIndex;
   /** Listings of the Files tree by folder ("" the root); null for a folder that could not be read. */
@@ -177,9 +171,8 @@ export interface SpacesCtx {
 // ── file events → what to read again (the tab's watch list, Mechanics › PR 2 › Files and wiring) ──
 
 /** What a file event means for the tab: which data to read again. */
-export type Flag = "snapshot" | "map" | "threads" | "world" | "linked" | "listing" | "live" | "tree" | "select";
+export type Flag = "snapshot" | "map" | "world" | "linked" | "listing" | "live" | "tree" | "select";
 
-export const SESSIONS_DIR = "brain/_index/sessions";
 export const PROJECT_NOTES_DIR = "brain/memory/projects";
 const under = (p: string, dir: string): boolean => p === dir || p.startsWith(`${dir}/`);
 
@@ -192,10 +185,6 @@ export function watchFlags(p: string, o: { selected: string | null; selectedPath
   const out: Flag[] = [];
   if (p === SNAPSHOT_PATH) out.push("snapshot");
   if (o.selected && p === `${MAPS_DIR}/${o.selected}.json`) out.push("map");
-  // A thread appearing or going (create, delete, rename). A running turn appends every event to its thread's file, and
-  // what Spaces shows of a thread (its workspace, whether it runs) does not change with them: the running state comes
-  // from the Sessions events (SpacesTab's TURN_EVENTS), so a modify here raises nothing.
-  if (under(p, SESSIONS_DIR) && !o.modify) out.push("threads");
   if (/^workspaces\/[^/]+\/workspace\.md$/.test(p)) out.push("world");
   if (p === TODO_PATH || under(p, PROPOSALS_DIR) || under(p, PROJECT_NOTES_DIR)) out.push("linked");
   if (!o.modify && o.selectedPath && p.startsWith(`${o.selectedPath}/`)) out.push("listing");
@@ -207,7 +196,6 @@ export const PANES_FOR: Record<Flag, readonly Pane[]> = {
   snapshot: ["list", "centre", "right"],
   select: ["list", "centre", "right"],
   map: ["centre", "right"],
-  threads: ["list", "right"],
   live: ["list"],
   // The linked code folder: the meta line, and where History's Resume and the pick-up hint say a thread resumes.
   world: ["centre", "right"],
@@ -259,12 +247,6 @@ export function rightPaneKey(ui: Pick<SpacesUiState, "selected" | "centre" | "fi
   return `files:${sel}:${rel}:${row === undefined ? "" : row === null ? "gone" : `${row.size ?? "?"}`}`;
 }
 
-/** What Spaces shows of the app's Sessions threads (the live dot, "All n in Sessions"): a list that reads the same
- *  draws the same, so a re-list that changed none of it redraws nothing. */
-export function threadSignature(threads: ReadonlyArray<Pick<HostSessionThread, "id" | "workspace" | "running">>): string {
-  return threads.filter(Boolean).map((t) => `${t.id}\u0000${t.workspace}\u0000${t.running ? 1 : 0}`).sort().join("\n");
-}
-
 // ── places and launches (D5, D7, D31, D32) ──
 
 /** Where a terminal for the entry starts: its place when it is a listed workspace folder on disk; why not otherwise. */
@@ -289,10 +271,10 @@ export interface MenuItem {
 }
 
 /** The target of a session row, looked up again in the current snapshot (D7, D31, D32), or why it is off. */
-export function targetFor(ctx: Pick<SpacesCtx, "snapshot" | "choices" | "world" | "sessionsAvailable">, e: WorkspaceEntry, ref: ResumeRef): ResumeTarget {
+export function targetFor(ctx: Pick<SpacesCtx, "snapshot" | "choices" | "world">, e: WorkspaceEntry, ref: ResumeRef): ResumeTarget {
   const where = entryPlace(e, ctx.world);
   if (!where.place) return { kind: "disabled", disabled: true, reason: where.reason };
-  return resumeTarget(ref, ctx.snapshot, ctx.choices, { world: ctx.world, sessionsAvailable: ctx.sessionsAvailable });
+  return resumeTarget(ref, ctx.snapshot, ctx.choices, { world: ctx.world });
 }
 
 /** The words a resume line types after `exec` (the configured binary and its flags), for the hint; a binary that needs
@@ -311,17 +293,16 @@ export function typedCommand(line: string, home?: string | null): string {
 }
 
 /**
- * Resume in Code, the split button's main half (D5): the last thread (D6's *last*), resumed in a Code terminal or opened
- * in Sessions; with no thread yet, a new session on the host ⌘T would start (`quick`), else the first host that is on
+ * Resume in Code, the split button's main half (D5): the last thread (D6's *last*), resumed in a Code terminal (never in
+ * Sessions, remove-sessions D5); with no thread yet, a new session on the host ⌘T would start (`quick`), else the first host that is on
  * and ready. Off with the reason otherwise.
  */
 export interface PrimaryAction { label: string; title: string; disabled: boolean; reason: string | null; run: (() => void) | null }
 
-export function primaryAction(ctx: Pick<SpacesCtx, "snapshot" | "choices" | "world" | "sessionsAvailable" | "act"> & Partial<Pick<SpacesCtx, "quick">>, e: WorkspaceEntry): PrimaryAction {
+export function primaryAction(ctx: Pick<SpacesCtx, "snapshot" | "choices" | "world" | "act"> & Partial<Pick<SpacesCtx, "quick">>, e: WorkspaceEntry): PrimaryAction {
   const last = lastThread(e.sessions);
   if (last) {
     const t = targetFor(ctx, e, { workspace: e.name, id: last.id });
-    if (t.kind === "sessions") return { label: "Open in Sessions", title: "Open the last thread in Sessions", disabled: false, reason: null, run: () => ctx.act.openSessions(t.thread) };
     if (t.kind === "terminal") return { label: "Resume in Code", title: `Resume the last ${t.host === "claude" ? "Claude Code" : "Codex"} thread in a Code terminal. ${t.hint}`, disabled: false, reason: null, run: () => ctx.act.resume({ workspace: e.name, id: last.id }) };
     return { label: "Resume in Code", title: t.reason, disabled: true, reason: t.reason, run: null };
   }
@@ -335,19 +316,16 @@ export function primaryAction(ctx: Pick<SpacesCtx, "snapshot" | "choices" | "wor
 }
 
 /**
- * The split button's menu (D5, D31, D32): a New session row per host that is on (a host that is off gets none, one that
- * is not logged in is off with its reason), Terminal here, and Open last thread in Sessions (off for a CLI thread or a
- * hidden Sessions tab). Never names a host the launcher's choices do not offer.
+ * The split button's menu (D5, D31): a New session row per host that is on (a host that is off gets none, one that
+ * is not logged in is off with its reason) and Terminal here. Never names a host the launcher's choices do not offer.
  */
-export function splitMenuItems(ctx: Pick<SpacesCtx, "choices" | "world" | "sessionsAvailable" | "act">, e: WorkspaceEntry): MenuItem[] {
+export function splitMenuItems(ctx: Pick<SpacesCtx, "choices" | "world" | "act">, e: WorkspaceEntry): MenuItem[] {
   const where = entryPlace(e, ctx.world);
   const items: MenuItem[] = newSessionRows(ctx.choices).map((r) => {
     const off = r.disabled || !where.place;
     return { key: `new:${r.host}`, label: r.label, detail: off ? (where.reason ?? r.reason) : null, disabled: off, run: off ? undefined : () => ctx.act.newSession(r.host) };
   });
   items.push({ key: "terminal", label: "Terminal here", detail: where.reason, disabled: !where.place, run: where.place ? () => ctx.act.terminal() : undefined });
-  const link = sessionsLink(lastThread(e.sessions), ctx.sessionsAvailable);
-  items.push({ key: "sessions", label: "Open last thread in Sessions", detail: link.reason, disabled: link.disabled, run: link.thread ? () => ctx.act.openSessions(link.thread) : undefined });
   return items;
 }
 
@@ -441,18 +419,6 @@ export function outsideMenuItems(ctx: Pick<SpacesCtx, "act" | "entries" | "world
 /** A path as it reads, `~/…` under home. */
 function shortenHome(p: string, home: string): string {
   return home && (p === home || p.startsWith(`${home}/`)) ? `~${p.slice(home.length)}` : p;
-}
-
-/** The app's Sessions threads in a workspace (D32: Sessions lists app threads only). */
-export function threadsIn(threads: HostSessionThread[], name: string): HostSessionThread[] {
-  return threads.filter((t) => t && t.workspace === name);
-}
-
-/** "All n in Sessions →" (D10, D32), or why it is off; null when there is no app thread to count. */
-export function sessionsFooter(threads: HostSessionThread[], name: string, sessionsAvailable: boolean): { text: string; disabled: boolean; reason: string | null } | null {
-  if (!sessionsAvailable) return { text: "Threads in Sessions", disabled: true, reason: SESSIONS_OFF_TEXT };
-  const n = threadsIn(threads, name).length;
-  return n ? { text: `All ${n} in Sessions →`, disabled: false, reason: null } : null;
 }
 
 // ── paths ──

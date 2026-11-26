@@ -109,7 +109,7 @@ New setup offers the [Superpowers](https://github.com/obra/superpowers) third-pa
     <td width="50%" valign="top">
       <img src="docs/assets/icon-hud.svg" width="40" alt="" /><br />
       <b>The UniDeX app</b><br />
-      A macOS app over all of it: Pulse, Spaces, Sessions on either host, Brain, Agent Workspace, Proposals, Skills, Routines, Files and more, with one Settings panel where every setting is a toggle or a picker. Its Computer pane is a browser a session's agent drives beside you, asking first before it acts on a site you haven't marked.
+      A macOS app over all of it: Pulse, Spaces, Code on either host (terminals with a chat view, and History), Brain, Agent Workspace, Proposals, Skills, Routines, Files and more, with one Settings panel where every setting is a toggle or a picker. Its Computer pane is a browser a session's agent drives beside you, asking first before it acts on a site you haven't marked.
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/icon-cost.svg" width="40" alt="" /><br />

@@ -80,7 +80,7 @@ test("Choose offers No agent CLI yet, says what waits for a host, and installs w
   await win.locator(".aos-setup-next").click();
   await expect(win.locator('input[name="aos-host"][value="none"]')).toBeChecked();
   for (const id of ["claude", "codex", "both"]) await expect(win.locator(`input[name="aos-host"][value="${id}"]`)).toBeDisabled();
-  await expect(win.locator('[data-hint="no-host"]')).toHaveText("Sessions and the Chief of Staff wait until Claude Code or Codex is added. Finish says how.");
+  await expect(win.locator('[data-hint="no-host"]')).toHaveText("Code's agents and the Chief of Staff wait until Claude Code or Codex is added. Finish says how.");
   await win.locator(".aos-setup-vault-input").fill(FX.vault);
   await expect(win.locator(".aos-setup-next")).toHaveCount(0);
   await win.locator(".aos-setup-install").click();

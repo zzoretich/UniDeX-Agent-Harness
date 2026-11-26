@@ -1,4 +1,4 @@
-// The sidebar HUD, ⌘K omnisearch, the note view with link following, the heartbeat pill, Sessions without a provider and
+// The sidebar HUD, ⌘K omnisearch, the note view with link following, the heartbeat pill, Code History without a provider and
 // the Term tab (app-smoke: Pulse heartbeat pill, Chat `none`, Term, Review readiness; phase-0 surfaces).
 
 import { expect, test } from "@playwright/test";
@@ -163,16 +163,13 @@ test.describe("note view", () => {
   });
 });
 
-test.describe("Sessions and Code", () => {
-  test("no provider: Sessions is on the rail for History alone, opens there, and Vault shows the hint", async () => {
+test.describe("Code", () => {
+  test("no provider: no Sessions button; past sessions on disk are in Code ▸ History (remove-sessions D1, D3)", async () => {
     const { win } = app();
-    // No host is signed in, but past sessions are on disk (install-import B11): the button is there, and the tab opens on History.
-    await expect(rail(win, "chat")).toHaveCount(1);
-    expect(await command(win, "agentic-os:open-workbench-chat")).toBe(true);
-    await expect(content(win).locator('.aos-ss-row[data-thread="history"]')).toHaveClass(/is-selected/);
-    await expect(content(win).locator(".aos-ss-hnohost")).toBeVisible();
-    await content(win).locator('.aos-ss-row[data-thread="vault"]').click();
-    await expect(content(win).locator(".aos-asst-nohint")).toContainText("no provider — run `aos provider` (Ollama reachable, or Claude Code or Codex logged in), then reopen the Workbench.");
+    await expect(rail(win, "chat")).toHaveCount(0);
+    await openTab(win, "term");
+    await content(win).locator("button.aos-tl-allhistory").click();
+    await expect(content(win).locator(".aos-ch .aos-ch-row").first()).toBeVisible();
     await openTab(win, "pulse");
   });
 

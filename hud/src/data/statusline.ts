@@ -121,7 +121,8 @@ export interface WorkbenchLink { tab: string; workspace?: string; pane?: SpacesP
 
 /**
  * What an agenticos://workbench link selects (spaces-redesign D12), every parameter checked: the tab as
- * workbenchTabFrom reads it, then for Spaces only, `workspace` when it is exactly the name of an entry in the snapshot
+ * workbenchTabFrom reads it; for Code (or Sessions' old id "chat") `pane=history`, Code ▸ History (remove-sessions D4);
+ * then for Spaces only, `workspace` when it is exactly the name of an entry in the snapshot
  * (`workspaces`), `pane` when it is one of SPACES_PANES and `thread` when it is a thread id. A value that fails its check
  * is dropped, as are `pane` and `thread` without a workspace; every other parameter is ignored. Null when the tab is
  * not a rail tab. A link only selects: nothing it carries resumes, opens a terminal, drafts or runs a verb.
@@ -130,6 +131,8 @@ export function workbenchLinkFrom(params: Record<string, string | undefined>, id
   const tab = workbenchTabFrom(params, ids);
   if (!tab) return null;
   const out: WorkbenchLink = { tab };
+  // Code ▸ History, by Code's id or Sessions' old one (remove-sessions D4): the one pane a link to Code may name.
+  if ((tab === "term" || tab === "chat") && params.pane === "history") { out.pane = "history"; return out; }
   const ws = params.workspace;
   if (tab !== "spaces" || typeof ws !== "string" || !ws || !workspaces.includes(ws)) return out;
   out.workspace = ws;

@@ -13,7 +13,7 @@ import {
 import {
   SMALL_MODEL_NOTE, WRITES_NOTE, defaultEngine, dropPromptOnly, engineChoices, enginePill, modelChoices, parseWrites, writesText,
 } from "../data/routineEngines";
-import { aliasCatalog } from "../data/claudeAsk";
+import { aliasCatalog } from "../data/agentSessions";
 import { sessionsHost, type HostCatalog } from "../host";
 import { adapterOf, writeRoutine, setRoutineEnabled, deleteRoutine, isGuardedChange, GuardedRoutineError, RoutineDraft } from "../data/routineWriter";
 import { readExternalSchedules, ExternalSchedule } from "../data/externalSchedules";

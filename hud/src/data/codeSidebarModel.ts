@@ -6,6 +6,7 @@
 import type AgenticOSPlugin from "../../main";
 import type { TerminalSession } from "./terminalSession";
 import { HistoryCache } from "./historyCache";
+import type { HistoryRow } from "./sessionHistory";
 import { groupSidebar, rowInput, sidebarOrder, statusInput, type SidebarGroup, type TermRow, type TermRowInput, type TermScope } from "./termGroups";
 import { rowStatus } from "./codeChat";
 import { placeOf, type Place, type PlaceWorld } from "./terminalLaunch";
@@ -41,6 +42,13 @@ export class CodeSidebarModel {
     this.hist?.dispose();
     this.hist = null;
     this.lastInputs.clear();
+  }
+
+  /** Code ▸ History's rows, whether they have loaded and whether a host can resume one (remove-sessions D3): none before
+   *  start(). */
+  history(): { rows: HistoryRow[]; loaded: boolean; error: string | null; hostReady: boolean } {
+    const h = this.hist;
+    return h ? { rows: h.rows(), loaded: h.loaded(), error: h.error(), hostReady: h.hostReady() } : { rows: [], loaded: false, error: null, hostReady: false };
   }
 
   /** The past conversations are looked up again; `force` skips the two-second floor. */

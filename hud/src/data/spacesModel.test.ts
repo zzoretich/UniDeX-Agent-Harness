@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  CLAUDE_RESUME_CROSS_FOLDER, CLI_THREAD_TEXT, HEURISTIC_READ_TEXT, LINKED_EMPTY_TEXT, PICKUP_EMPTY,
-  SESSIONS_OFF_TEXT, formerNames, gitBrief, gitMeta, gitMetaParts, groupOf, hiddenToggleText, historyFor, hostOffText,
+  CLAUDE_RESUME_CROSS_FOLDER, HEURISTIC_READ_TEXT, LINKED_EMPTY_TEXT, OLD_SESSIONS_TEXT, PICKUP_EMPTY,
+  formerNames, gitBrief, gitMeta, gitMetaParts, groupOf, hiddenToggleText, historyFor, hostOffText,
   linkedCounts, linkedFor, liveByWorkspace, matchesQuery, namesPath, newSessionRows, overviewFor, pickupFor,
-  resumeTarget, sessionsLink, spaceList, spaceRow, statusPill, statusWord, workspaceSlug,
+  resumeTarget, spaceList, spaceRow, statusPill, statusWord, workspaceSlug,
   SPACES_OFF_TEXT, STALE_TEXT, UPGRADE_TEXT, flippingNotes, manifestList, movePlan, noteHoldsStatus, todoLinkSuggestions, verbResult, workspaceArgs,
 } from "./spacesModel";
 import type { ResumeContext } from "./spacesModel";
@@ -123,15 +123,14 @@ test("the filter matches name, branch and next step, every word, case-insensitiv
 
 // ── live (D26) ──
 
-test("liveByWorkspace counts running terminals placed in a workspace and running Sessions threads", () => {
+test("liveByWorkspace counts the running terminals placed in a workspace (remove-sessions D5: no Sessions threads)", () => {
   const live = liveByWorkspace(
-    [{ workspace: "site", running: true }, { workspace: "site", running: false }, { workspace: "notes", running: true }],
-    [{ place: { workspace: "site" }, exited: false }, { place: { workspace: "site" }, exited: true }, { place: {}, exited: false }, { place: { workspace: "notes" }, exited: false }],
+    [{ place: { workspace: "site" }, exited: false }, { place: { workspace: "site" }, exited: false }, { place: { workspace: "site" }, exited: true }, { place: {}, exited: false }, { place: { workspace: "notes" }, exited: false }],
   );
   assert.deepEqual([...live.keys()].sort(), ["notes", "site"]);
-  assert.deepEqual(live.get("site"), { terminals: 1, threads: 1, total: 2, title: "Live: 1 terminal in Code, 1 running thread in Sessions" });
-  assert.equal(live.get("notes")!.title, "Live: 1 terminal in Code, 1 running thread in Sessions");
-  assert.equal(liveByWorkspace(null, null).size, 0);
+  assert.deepEqual(live.get("site"), { terminals: 2, total: 2, title: "Live: 2 terminals in Code" });
+  assert.equal(live.get("notes")!.title, "Live: 1 terminal in Code");
+  assert.equal(liveByWorkspace(null).size, 0);
 });
 
 // ── git and the row (D4, D24) ──
@@ -163,7 +162,7 @@ test("spaceRow: status, age, git, hosts with counts, live dot, the next step or 
     sessions: { claude: 6, codex: 2, total: 8, lastAt: ago(40), windowDays: 30 },
     handoff: { file: "HANDOFF-site.md", now: "Ship the tiles", next: null, asOf: null, mtime: null },
   });
-  const live = liveByWorkspace([], [{ place: { workspace: "site" }, exited: false }]);
+  const live = liveByWorkspace([{ place: { workspace: "site" }, exited: false }]);
   const r = spaceRow(e, { live, counts: { todos: 2, proposals: 1 }, now: NOW });
   assert.equal(r.age, "12d");
   assert.equal(r.ageTone, "warn");
@@ -312,13 +311,15 @@ test("resumeTarget: host off is disabled with the aos init fix, also when the ch
   assert.equal(x.kind === "terminal" && x.host, "codex");
 });
 
-test("resumeTarget opens a Sessions thread in Sessions, off with the reason where Sessions is hidden (D32)", () => {
+test("remove-sessions D5: an app row from an older snapshot (or a runtime not yet upgraded) resumes nowhere new and never says to open Sessions", () => {
   const thread = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeffff0000";
   const s = snap([row(ID1, { kind: "app", via: "app", resumable: false, reason: "A Sessions thread: open it in Sessions", thread })]);
-  assert.deepEqual(resumeTarget({ workspace: "site", id: ID1 }, s, choices(), CTX), { kind: "sessions", disabled: false, workspace: "site", thread, hint: "Opens in Sessions" });
-  assert.deepEqual(resumeTarget({ workspace: "site", id: ID1 }, s, choices(), { ...CTX, sessionsAvailable: false }), { kind: "disabled", disabled: true, reason: SESSIONS_OFF_TEXT });
-  const bad = snap([row(ID1, { kind: "app", via: "app", resumable: false, thread: "../x" })]);
-  assert.equal(resumeTarget({ workspace: "site", id: ID1 }, bad, choices(), CTX).kind, "disabled");
+  const t = resumeTarget({ workspace: "site", id: ID1 }, s, choices(), CTX);
+  assert.deepEqual(t, { kind: "disabled", disabled: true, reason: OLD_SESSIONS_TEXT });
+  assert.doesNotMatch(OLD_SESSIONS_TEXT, /open it in Sessions/);
+  // The collector's rewrite (a plain headless row) resumes in Code when the host allows it.
+  const next = snap([row(ID1, { kind: "headless", via: "app", resumable: true, reason: null, thread })]);
+  assert.equal(resumeTarget({ workspace: "site", id: ID1 }, next, choices(), CTX).kind, "terminal");
 });
 
 test("newSessionRows lists only hosts that are on; one not logged in is disabled with its reason (D31)", () => {
@@ -327,16 +328,6 @@ test("newSessionRows lists only hosts that are on; one not logged in is disabled
     { host: "claude", label: "New Claude Code session", disabled: false, reason: null },
     { host: "codex", label: "New Codex session", disabled: true, reason: "Codex is not logged in" },
   ]);
-});
-
-test("sessionsLink: only a Sessions thread opens in Sessions; a CLI thread says to resume it in Code (D32)", () => {
-  assert.deepEqual(sessionsLink(row(ID1), true), { disabled: true, reason: CLI_THREAD_TEXT, thread: null });
-  assert.deepEqual(sessionsLink(row(ID1, { kind: "app", thread: ID2 }), true), { disabled: false, reason: null, thread: ID2 });
-  assert.deepEqual(sessionsLink(row(ID1, { kind: "app", thread: ID2 }), false), { disabled: true, reason: SESSIONS_OFF_TEXT, thread: null });
-  assert.equal(sessionsLink(null, true).reason, "No session yet");
-  // The same id check resumeTarget makes: a malformed thread field opens nothing.
-  assert.deepEqual(sessionsLink(row(ID1, { kind: "app", thread: "../x" }), true), { disabled: true, reason: "This Sessions thread has no id the page can open", thread: null });
-  assert.equal(sessionsLink(row(ID1, { kind: "app" }), true).disabled, true, "an app row with no thread");
 });
 
 // ── pick-up, Overview, History (D6, D8, D10) ──
@@ -658,33 +649,32 @@ test("verbResult: ok bodies, the runtime's reason, a refused spawn, an old runti
   assert.equal((r({ code: 1, stdout: '{"ok":false,"reason":"unknown command in workspaces/x"}' }) as { outdated: boolean }).outdated, false);
 });
 
-test("movePlan names the source, the destination, the threads that move and the notes whose tag flips (§6)", () => {
+test("movePlan names the source, the destination and the notes whose tag flips (§6; remove-sessions D5: no threads)", () => {
   const notes = [{ title: "Site project", path: "brain/memory/projects/site.md" }];
-  const a = movePlan("archive", entry("site"), { threads: 2, sessions: 5, notes });
+  const a = movePlan("archive", entry("site"), { sessions: 5, notes });
   assert.deepEqual([a.title, a.confirm, a.from, a.to], ["Archive site?", "Archive", "workspaces/site", "workspaces/_archive/site"]);
   assert.deepEqual(a.items, [
     "Moves workspaces/site to workspaces/_archive/site",
     "Moves its file map to brain/_index/workspace-maps/_archive/",
     "Marks its project memory archived: status/active becomes status/archived in 1 note",
-    "Keeps its 2 Sessions threads listed in Sessions, read-only until Restore",
     "Keeps its 5 sessions and its git history attached",
   ]);
   assert.deepEqual(a.notes, ["Site project"]);
-  assert.match(movePlan("archive", entry("site"), { threads: 0, archiveTaken: true }).items[0], /date added/);
+  assert.match(movePlan("archive", entry("site"), { archiveTaken: true }).items[0], /date added/);
   assert.equal(a.footnote, "Restore it any time: show archived and _ folders, then More › Restore…");
-  const r = movePlan("restore", entry("_archive/site", { label: "site" }), { threads: 1, notes });
-  assert.deepEqual([r.from, r.to, r.items[3]], ["workspaces/_archive/site", "workspaces/site", "Its 1 Sessions thread takes turns again"]);
+  const r = movePlan("restore", entry("_archive/site", { label: "site" }), { notes });
+  assert.deepEqual([r.from, r.to, r.items.length], ["workspaces/_archive/site", "workspaces/site", 3]);
   // A dated archive goes back to the name Archive recorded (archivedFrom:).
-  const rd = movePlan("restore", entry("_archive/site-2026-10-10", { label: "site-2026-10-10" }), { threads: 0, to: "site" });
+  const rd = movePlan("restore", entry("_archive/site-2026-10-10", { label: "site-2026-10-10" }), { to: "site" });
   assert.deepEqual([rd.from, rd.to, rd.items[0]], ["workspaces/_archive/site-2026-10-10", "workspaces/site", "Moves workspaces/_archive/site-2026-10-10 back to workspaces/site"]);
-  const n = movePlan("rename", entry("site"), { threads: 3, to: "new-site", claudeThreads: 2 });
+  const n = movePlan("rename", entry("site"), { to: "new-site", claudeThreads: 2 });
   assert.deepEqual([n.from, n.to, n.warn], ["workspaces/site", "workspaces/new-site", null], "Claude resumes across folders (D7): no warning");
-  assert.equal(movePlan("rename", entry("site"), { threads: 0, to: "x", claudeThreads: 2, claudeCrossFolder: false }).warn, "2 Claude threads may not resume from the new folder");
-  assert.match(n.items[1], /3 Sessions threads, and rewrites each thread's workspace to new-site/);
+  assert.equal(movePlan("rename", entry("site"), { to: "x", claudeThreads: 2, claudeCrossFolder: false }).warn, "2 Claude threads may not resume from the new folder");
+  assert.equal(n.items[1], "Moves its file map");
   assert.equal(n.items.length, 3);
-  assert.equal(movePlan("rename", entry("site"), { threads: 0, to: "x", ownRepo: true }).items[3], "Codex asks once to trust workspaces/x: it is a git repository of its own");
-  const ad = movePlan("adopt", entry("site"), { threads: 0, sessions: 4, folder: "~/code/site" });
+  assert.equal(movePlan("rename", entry("site"), { to: "x", ownRepo: true }).items[3], "Codex asks once to trust workspaces/x: it is a git repository of its own");
+  const ad = movePlan("adopt", entry("site"), { sessions: 4, folder: "~/code/site" });
   assert.deepEqual([ad.from, ad.to, ad.items[1]], ["~/code/site", "site (alias)", "Moves nothing: the folder stays where it is"]);
   assert.equal(ad.items[2], "Its 4 sessions count toward site after the next scan");
-  assert.equal(movePlan("adopt", entry("site"), { threads: 0, sessions: 1, folder: "~/x" }).items[2], "Its 1 session counts toward site after the next scan");
+  assert.equal(movePlan("adopt", entry("site"), { sessions: 1, folder: "~/x" }).items[2], "Its 1 session counts toward site after the next scan");
 });

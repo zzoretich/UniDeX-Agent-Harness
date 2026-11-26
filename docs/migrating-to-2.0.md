@@ -37,7 +37,7 @@ answer or dismiss it; quitting the app with one open asks again next time.
    answered in a terminal settles it). The card says what moves to this Mac (session summaries, memory extraction and
    the wrap, workspace insights and file maps, embeddings and recall, the Pulse briefing and the graph's semantic
    pass, and the AI buttons, each of which can switch back in Settings) and what stays on Claude Code or Codex
-   (Sessions, the Code tab's agents, cross-review and agent teams, and the Chief of Staff's duties), what background
+   (the Code tab's agents, cross-review and agent teams, and the Chief of Staff's duties), what background
    work spent in the last 7 days, and, when this Mac's model is not downloaded yet, **Download the model**. A ticked
    box, worded for your hosts, also moves the Chief of Staff to Opus 5.5 / gpt-6-sol.
    - **Go local** runs `aos migrate local-first --apply` (with `--chief` while the box is ticked): it first backs up
@@ -86,7 +86,7 @@ brings it (`aos migrate import --apply` does the same and settles the migration;
 last import with **Import** and **Import older history** (while the app's `import` write surface is off, run
 `aos import` in the Code tab). What it brings, and the digest that works through your past sessions on the local model,
 is in [install.md](install.md#bring-in-your-history). Imported memories wait in Brain ▸ Review, `reviewed: false`, one
-batch per host. Sessions ▸ History lists your past Claude Code and Codex sessions, imported or not, with the digest's
+batch per host. Code ▸ History (All history in Code) lists your past Claude Code and Codex sessions, imported or not, with the digest's
 one-line summary as it reaches each, and resumes one in a Code terminal on a host that is on and signed in.
 
 ## The Chief of Staff

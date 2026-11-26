@@ -2,15 +2,15 @@
 // session-browser S1, which supersedes the per-folder computers). Main sends the state of every browser it knows on each
 // change (each state names its session) and a reveal when the person clicks an ask's desktop notification. One store per
 // host keeps the latest state per session, subscribed once, and every reader
-// takes what it needs from it: both pages' Computer panes, the Code and Sessions rail badges, and the dots on the Code
-// and Sessions rows. No DOM; the host is the only thing it touches.
+// takes what it needs from it: Code's Computer pane, its rail badge and the dots on its rows (remove-sessions D8: the
+// Sessions page went with the tab). No DOM; the host is the only thing it touches.
 
 import { hudHost, type HostComputer, type HostComputerAsk, type HostComputerState } from "../host";
 
-/** The two pages with a Computer pane: Code (the deck) and Sessions (its tab id stays "chat"). */
-export type ComputerPage = "code" | "chat";
+/** The page with a Computer pane: Code (the deck). */
+export type ComputerPage = "code";
 
-/** What a row of the Code or Sessions list shows for its session (D32, D35): a dot while its agent holds its browser while
+/** What a row of the Code list shows for its session (D32, D35): a dot while its agent holds its browser while
  *  no pane shows it, or waits on an ask; and waiting while it waits on one. */
 export interface RowMarks { dot: boolean; waiting: boolean }
 
@@ -19,46 +19,26 @@ export interface AskRoute { page: ComputerPage; session: string | null }
 
 const NO_MARKS: RowMarks = { dot: false, waiting: false };
 
-/** The page an agent key belongs to: `code:<terminal id>` is Code, `chat:<thread>` is Sessions; null for anything else. */
+/** The page an agent key belongs to: `code:<terminal id>` is Code; null for anything else, a Sessions `chat:<thread>`
+ *  browser main may still hold included (remove-sessions D8). */
 export function pageOfSession(session: string): ComputerPage | null {
-  if (session.startsWith("code:")) return "code";
-  if (session.startsWith("chat:")) return "chat";
-  return null;
+  return session.startsWith("code:") ? "code" : null;
 }
-
-/** The session key of a Sessions thread. */
-export const chatSession = (thread: string): string => `chat:${thread}`;
 
 /** The session key of a Code terminal: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`; the
  *  page's bridge counts these and starts again with each page load). */
 export const codeSession = (ptyId: string): string => `code:${ptyId}`;
-
-/**
- * Where a Computer notification's Open the Computer pane goes (ruling R50): the page whose sessions wait on an ask, the
- * oldest ask's page when both pages' do, else the page that last showed the pane, else Sessions.
- */
-export function pageToOpen(asks: readonly HostComputerAsk[], last: ComputerPage | null, pageOf: (a: HostComputerAsk) => ComputerPage | null = (a) => pageOfSession(a.session)): ComputerPage {
-  const paged = asks.filter((a) => pageOf(a) !== null);
-  const code = paged.some((a) => pageOf(a) === "code");
-  const chat = paged.some((a) => pageOf(a) === "chat");
-  if (code && !chat) return "code";
-  if (chat && !code) return "chat";
-  if (code && chat) return pageOf([...paged].sort((a, b) => a.at - b.at)[0]) as ComputerPage;
-  return last ?? "chat";
-}
 
 export class ComputerStore {
   private states = new Map<string, HostComputerState>();
   private listeners = new Set<() => void>();
   private revealers = new Set<(askId: string) => void>();
   /** The session each page's pane gives a rectangle now; null when it gives none. */
-  private onScreen: Record<ComputerPage, string | null> = { code: null, chat: null };
+  private onScreen: Record<ComputerPage, string | null> = { code: null };
   /** The session main has selected (the last a pane in front selected), and whether it is popped out (every state carries
    *  main's one pop-out flag): a popped-out computer is on screen whatever the pane does, as main counts it. */
   private selected: string | null = null;
   private popped = false;
-  /** The page whose pane was last in front (R50's fallback). */
-  private lastPage: ComputerPage | null = null;
   /** The ask a notification click asked to show, until the pane that shows it has scrolled to it. */
   private reveal: string | null = null;
   private off: (() => void) | null;
@@ -109,7 +89,7 @@ export class ComputerStore {
   marks(session: string | null): RowMarks {
     if (!session) return NO_MARKS;
     const waiting = this.asks().some((a) => a.session === session || (this.route(a)?.session === session));
-    const shown = this.onScreen.code === session || this.onScreen.chat === session || (this.popped && this.selected === session);
+    const shown = this.onScreen.code === session || (this.popped && this.selected === session);
     const driving = this.states.get(session)?.holder?.kind === "agent" && !shown;
     return { dot: waiting || driving, waiting };
   }
@@ -128,11 +108,8 @@ export class ComputerStore {
     this.changed();
   }
 
-  /** `page`'s pane is in front: it becomes the page Open the Computer pane falls back to. */
-  noteShown(page: ComputerPage): void { this.lastPage = page; }
-
-  /** R50: the page Open the Computer pane goes to. */
-  pageToOpen(): ComputerPage { return pageToOpen(this.asks(), this.lastPage, (a) => this.route(a)?.page ?? null); }
+  /** R50: the page Open the Computer pane goes to: Code, the one page with a pane (remove-sessions D8). */
+  pageToOpen(): ComputerPage { return "code"; }
 
   /** Shows an ask (a notification's click, or Open the Computer pane): its readers route to its page and session, and
    *  the pane that shows it takes it. */

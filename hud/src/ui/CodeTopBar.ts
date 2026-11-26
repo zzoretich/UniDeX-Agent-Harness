@@ -68,7 +68,8 @@ export class CodeTopBar {
     this.hostChipEl = null;
     this.placeChipEl = null;
     const past = this.stage.past;
-    const s = past ? undefined : this.host.activeSession();
+    // History over the stage (remove-sessions D3) shows no terminal: an empty bar, no composer, no browser.
+    const s = past || this.stage.historyShown() ? undefined : this.host.activeSession();
     this.host.composer()?.setSession(s ?? null);
     this.renderSwitch(s);
     this.stage.applyView();
@@ -119,14 +120,14 @@ export class CodeTopBar {
 
   /** The pane buttons alone, when only they changed (the Computer pane opened or collapsed by its own button). */
   renderPanes(): void {
-    const s = this.stage.past ? undefined : this.host.activeSession();
+    const s = this.stage.covered() ? undefined : this.host.activeSession();
     this.panes.renderBar(this.panesEl, s, s ? this.model.placeOfSession(s) : null);
   }
 
   /** A git status read landed, or the Diff pane opened or closed: the place chip's ⎇ branch and the pane buttons only, so
    *  an open place menu and the rest of the bar stay as they are. */
   renderStatus(): void {
-    const s = this.stage.past ? undefined : this.host.activeSession();
+    const s = this.stage.covered() ? undefined : this.host.activeSession();
     const chip = this.placeChipEl;
     if (chip?.isConnected && s) {
       chip.querySelector(".aos-term-branch")?.remove();
@@ -188,7 +189,7 @@ export class CodeTopBar {
     if (!el) return;
     const feeds = this.plugin.codeFeeds;
     const past = this.stage.past;
-    const sig = past ? `past:${past.key}` : `${s?.id ?? ""}:${s?.meta.host ?? ""}:${feeds?.on() ? 1 : 0}:${s && feeds ? feeds.view(s.id) : ""}`;
+    const sig = past ? `past:${past.key}` : this.stage.historyShown() ? "history" : `${s?.id ?? ""}:${s?.meta.host ?? ""}:${feeds?.on() ? 1 : 0}:${s && feeds ? feeds.view(s.id) : ""}`;
     if (sig === this.switchShown) return;
     this.switchShown = sig;
     el.empty();

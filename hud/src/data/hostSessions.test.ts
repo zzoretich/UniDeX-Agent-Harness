@@ -95,14 +95,14 @@ test("recentRows: newest first, host and kind in the meta, a title fallback, the
   assert.deepEqual(recentRows({ claude: 0, codex: 0, total: 0, lastAt: null }), [], "a snapshot before recent rows");
 });
 
-test("lastThread: the newest interactive or Sessions row; team and headless runs never (spaces-redesign D6)", () => {
+test("lastThread: the newest interactive row; team, headless and old Sessions runs never (spaces-redesign D6, remove-sessions D5)", () => {
   const recent = [
     srow(ID3, { kind: "team", lastAt: "2026-09-21T11:59:00.000Z" }),
     srow(ID2, { kind: "headless", lastAt: "2026-09-21T11:58:00.000Z" }),
     srow(ID1, { kind: "interactive", lastAt: "2026-09-21T09:00:00.000Z" }),
     srow("aaaaaaaa-bbbb-4ccc-8ddd-eeeeffff0000", { kind: "app", lastAt: "2026-09-21T10:00:00.000Z" }),
   ];
-  assert.equal(lastThread({ claude: 4, codex: 0, total: 4, lastAt: null, recent })?.kind, "app");
+  assert.equal(lastThread({ claude: 4, codex: 0, total: 4, lastAt: null, recent })?.id, ID1);
   assert.equal(lastThread({ claude: 2, codex: 0, total: 2, lastAt: null, recent: recent.slice(0, 2) }), null);
   assert.equal(lastThread(null), null);
 });

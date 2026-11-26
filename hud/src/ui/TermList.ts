@@ -22,9 +22,12 @@ export interface TermListActions {
   openClosed?(r: TermRow): void;
   /** Show more (+10) in the group. */
   showMore?(key: string): void;
-  /** All history: Sessions ▸ History. */
+  /** All history: Code ▸ History (remove-sessions D3). */
   allHistory?(): void;
 }
+
+/** The `activePast` render() takes while Code ▸ History shows: no row is selected, and All history is pressed. */
+export const HISTORY_KEY = "history";
 
 /** The sidebar's counts: terminals running, those waiting on you, and those ended (Clear ended). */
 export interface TermCounts { open: number; needs: number; ended: number }
@@ -192,7 +195,11 @@ export class TermList {
       b.addEventListener("click", () => this.actions.clearEnded());
     }
     if (this.actions.allHistory) {
-      const all = this.footEl.createEl("button", { cls: "aos-tl-allhistory", text: "All history", attr: { type: "button", title: "Sessions ▸ History: every past Claude Code and Codex session" } });
+      const on = this.last.activePast === HISTORY_KEY;
+      const all = this.footEl.createEl("button", {
+        cls: `aos-tl-allhistory${on ? " is-active" : ""}`, text: "All history",
+        attr: { type: "button", title: "Every past Claude Code and Codex session on this Mac", "aria-pressed": String(on) },
+      });
       all.addEventListener("click", () => this.actions.allHistory?.());
     }
   }

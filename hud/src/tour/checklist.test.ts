@@ -14,9 +14,9 @@ import { ROUTINES_DIR } from "../data/routines";
 import { PERSONA_IDENTITY_PATH } from "../data/aosConfig";
 import type { TourContext } from "./predicates";
 
-const CLAUDE: TourContext = { hosts: ["claude"], chat: false, checklist: true };
-const CODEX: TourContext = { hosts: ["codex"], chat: true, checklist: true };
-const NONE: TourContext = { hosts: [], chat: false, checklist: true };
+const CLAUDE: TourContext = { hosts: ["claude"], checklist: true };
+const CODEX: TourContext = { hosts: ["codex"], checklist: true };
+const NONE: TourContext = { hosts: [], checklist: true };
 
 test("the caches it reads are the ones the HUD already reads", () => {
   assert.deepEqual([RUNS_LOG, MEMORY_TRAIL, ROUTINES_FOLDER, PERSONA_IDENTITY], [RUNS_PATH, TRAIL_PATH, ROUTINES_DIR, PERSONA_IDENTITY_PATH]);
@@ -32,8 +32,7 @@ test("the welcome tour first, then each chapter this Mac can show, then the acti
   const list = buildChecklist(BOOK, DEFAULT_TOUR_STATE, CLAUDE);
   assert.equal(list.items[0].id, "core");
   assert.equal(list.items[0].title, "Take the welcome tour");
-  assert.ok(!list.items.some((i) => i.id === "sessions"), "Sessions is gated by chatAvailable");
-  assert.ok(buildChecklist(BOOK, DEFAULT_TOUR_STATE, CODEX).items.some((i) => i.id === "sessions"));
+  assert.ok(!buildChecklist(BOOK, DEFAULT_TOUR_STATE, CODEX).items.some((i) => i.id === "sessions" || i.id === "sessions-history"), "remove-sessions D13: no Sessions chapters");
   const kinds = list.items.map((i) => i.kind);
   assert.equal(kinds.indexOf("action"), kinds.lastIndexOf("chapter") + 1, "chapters, then actions");
   assert.deepEqual([list.done, list.shown], [0, true]);

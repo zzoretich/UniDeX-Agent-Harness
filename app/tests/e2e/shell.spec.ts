@@ -45,11 +45,11 @@ test("the app records itself in the vault for doctor and the update check (brain
   expect(fs.readdirSync(FX.v("brain/_index")).filter((n) => n.startsWith("hud-host.json."))).toEqual([]);
 });
 
-test("rail: three sections in order with a line between them, Sessions with no host signed in for its History alone (local-first A17, install-import B11), ⚙ Settings at the foot", async () => {
+test("rail: three sections in order with a line between them, no Sessions (remove-sessions D1), ⚙ Settings at the foot", async () => {
   const { win } = app();
   const ids = await win.locator(".aos-wb-railtabs .aos-wb-railbtn").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab));
-  // No host is signed in on the fixture, but its hosts left past sessions on disk: Sessions is on the rail for History.
   expect(ids).toEqual(RAIL_ORDER);
+  await expect(rail(win, "chat")).toHaveCount(0);
   // The sections and their lines (spec 2026-10-09-rail-sections-code D1, D5): a separator between sections, none at
   // either end, so the list reads ① | ② | ③.
   const seq = await win.locator(".aos-wb-railtabs > *").evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.tab ?? (e.classList.contains("aos-wb-railsep") ? "|" : "?")));
@@ -66,7 +66,7 @@ test("rail: three sections in order with a line between them, Sessions with no h
   await expect(win.locator(".aos-wb-railfoot .aos-wb-railbtn[data-tab='settings']")).toHaveCount(1);
   await expect(rail(win, "files").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "file-text");
   await expect(rail(win, "skills").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "sparkles");
-  // One Agent Workspace button with Agents' icon, after Sessions; the id stays "agent-teams" (agent-workspace D2, D3).
+  // One Agent Workspace button with Agents' icon, after Code; the id stays "agent-teams" (agent-workspace D2, D3).
   await expect(rail(win, "agent-teams").locator(".aos-wb-railicon")).toHaveAttribute("data-icon", "bot");
   await expect(rail(win, "agent-teams")).toHaveAttribute("aria-label", "Agent Workspace");
   await expect(rail(win, "agents")).toHaveCount(0);
@@ -207,9 +207,11 @@ test("commands: the plugin registers its palette commands; each 'Open Workbench:
   const cmds = await win.evaluate(() => (window as unknown as { aosHost: { app: { commands: { list(): Array<{ id: string; name: string; hotkeys?: unknown[] }> } } } })
     .aosHost.app.commands.list().map((c) => ({ id: c.id, name: c.name, hotkeys: c.hotkeys ?? [] })));
   const ids = cmds.map((c) => c.id);
-  for (const t of ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "connectors", "agents", "agent-teams", "chat", "term", "settings"]) {
+  for (const t of ["todo", "proposals", "notifications", "spaces", "memory", "runs", "routines", "skills", "connectors", "agents", "agent-teams", "term", "settings"]) {
     expect(ids).toContain(`agentic-os:open-workbench-${t}`);
   }
+  // remove-sessions D1, D4: no Open Workbench: Sessions (there is no Sessions to open; old links land on Code).
+  expect(ids).not.toContain("agentic-os:open-workbench-chat");
   for (const id of ["open-workbench", "open-sidebar-hud", "open-memory-inspector", "open-run-inspector", "new-terminal", "quick-capture", "open-omnisearch"]) {
     expect(ids).toContain(`agentic-os:${id}`);
   }
@@ -217,8 +219,6 @@ test("commands: the plugin registers its palette commands; each 'Open Workbench:
   expect(cmds.find((c) => c.id === "agentic-os:open-workbench-agent-teams")?.name).toBe("Open Workbench: Agent Workspace");
   expect(cmds.find((c) => c.id === "agentic-os:open-workbench-agents")?.name).toBe("Open Workbench: Agents (Agent Workspace)");
   expect(cmds.find((c) => c.id === "agentic-os:open-workbench-settings")?.name).toBe("Open Workbench: Settings");
-  // The Chat tab became Sessions; its id (and so its command's) stays "chat", so links and hotkeys keep working.
-  expect(cmds.find((c) => c.id === "agentic-os:open-workbench-chat")?.name).toBe("Open Workbench: Sessions");
   // Term became Code the same way: the command keeps the id "term".
   expect(cmds.find((c) => c.id === "agentic-os:open-workbench-term")?.name).toBe("Open Workbench: Code");
   // Review readiness: Omnisearch has no default hotkey (⌘K is the host's own binding).
@@ -248,6 +248,19 @@ test("agenticos:// links open the named tab; an unknown tab leaves the current o
   await open({ tab: "agents" });
   await expect(rail(win, "agent-teams")).toHaveClass(/is-active/);
   await openTab(win, "pulse");
+  // remove-sessions D4: Sessions' id lands on Code, from older runtimes' statuslines too; a thread is ignored and
+  // pane=history opens Code ▸ History.
+  expect(await open({ vault: "vault", tab: "chat" })).toBe(true);
+  await expect(rail(win, "term")).toHaveClass(/is-active/);
+  await expect(content(win).locator(".aos-ch")).toBeHidden();
+  await openTab(win, "pulse");
+  await open({ tab: "chat", thread: "12345678-1234-4234-8234-123456789abc" });
+  await expect(rail(win, "term")).toHaveClass(/is-active/);
+  await openTab(win, "pulse");
+  await open({ tab: "chat", pane: "history" });
+  await expect(rail(win, "term")).toHaveClass(/is-active/);
+  await expect(content(win).locator(".aos-ch")).toBeVisible();
+  await openTab(win, "pulse");
 });
 
 // ── the read-only tour ───────────────────────────────────────────────
@@ -272,7 +285,7 @@ test("a tour of every tab, the sidebar HUD and ⌘K raises no renderer or main-p
   const h = app();
   const { win } = h;
   const before = h.errors.length;
-  for (const id of [...RAIL_ORDER.filter((t) => t !== "chat"), "settings"]) {
+  for (const id of [...RAIL_ORDER, "settings"]) {
     await openTab(win, id);
     await win.waitForTimeout(600);
     await expect(content(win)).not.toBeEmpty();

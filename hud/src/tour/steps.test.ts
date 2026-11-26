@@ -42,11 +42,11 @@ test("a chapter for every surface: each rail tab, each Brain mode, the status ba
   for (const id of ["status-bar", "capture-search", "help"]) assert.ok(chapterById(BOOK, id), `no ${id} chapter`);
 });
 
-test("the welcome tour: about ten steps, rail to Help, routing only by the user's clicks on the rail", () => {
+test("remove-sessions D13: the welcome tour has nine stops, rail to Help, none on Sessions, routing only by the user's clicks on the rail", () => {
   const core = chapterById(BOOK, BOOK.core);
   assert.ok(core);
-  assert.deepEqual(core.steps.map((s) => s.id), ["rail", "pulse", "sessions", "code", "brain", "spaces", "routines", "chief-of-staff", "search", "help"]);
-  assert.equal(core.steps.find((s) => s.id === "sessions")?.when, "chatAvailable", "Sessions is off the rail with no host signed in");
+  assert.deepEqual(core.steps.map((s) => s.id), ["rail", "pulse", "code", "brain", "spaces", "routines", "chief-of-staff", "search", "help"]);
+  assert.match(core.summary, /^Nine stops/);
   for (const s of core.steps) assert.equal(s.tab, undefined, `${s.id} routes by the click, not by open()`);
   for (const s of core.steps.filter((x) => x.advance === "click")) assert.match(s.anchor, /^\.aos-wb-railbtn\[data-tab="[a-z-]+"\]$/, s.id);
 });
@@ -70,20 +70,31 @@ test("anchors are stable attributes or classes, never positional", () => {
   }
 });
 
-test("a step's pane: a Spaces pane on Spaces, History on Sessions (install-import B11), a pane by kind on Agent Workspace (D18), nothing else", () => {
+test("a step's pane: a Spaces pane on Spaces, History on Code (remove-sessions D13), a pane by kind on Agent Workspace (D18), nothing else", () => {
   const book = (tab: string, pane: string) => ({
     schema: 1, core: "c", actions: [],
     chapters: [{ id: "c", title: "C", summary: "s", steps: [{ id: "a", tab, pane, anchor: ".x", title: "T", body: "B", advance: "next", since: "2.0.0" }] }],
   });
   assert.deepEqual(validateBook(book("spaces", "history")), []);
-  assert.deepEqual(validateBook(book("chat", "history")), []);
+  assert.deepEqual(validateBook(book("term", "history")), []);
   for (const pane of ["needs", "team", "agent"]) assert.deepEqual(validateBook(book("agent-teams", pane)), [], pane);
-  for (const [tab, pane] of [["chat", "overview"], ["pulse", "history"], ["spaces", "nowhere"], ["agent-teams", "history"], ["spaces", "team"]]) {
-    assert.match(validateBook(book(tab, pane)).join("\n"), /needs tab spaces and a Spaces pane, tab chat and history, or tab agent-teams and needs, team or agent/, `${tab} ${pane}`);
+  for (const [tab, pane] of [["term", "overview"], ["pulse", "history"], ["spaces", "nowhere"], ["agent-teams", "history"], ["spaces", "team"]]) {
+    assert.match(validateBook(book(tab, pane)).join("\n"), /needs tab spaces and a Spaces pane, tab term and history, or tab agent-teams and needs, team or agent/, `${tab} ${pane}`);
   }
-  // Sessions keeps its own chapter for "Tour this tab"; History is a chapter of its own, shown with no host too.
-  assert.equal(chapterForTab(BOOK, "chat")?.id, "sessions");
-  assert.equal(chapterById(BOOK, "sessions-history")?.when, "sessionsShown");
+  // remove-sessions D13: a pane on chat is refused, as the tab itself is.
+  assert.match(validateBook(book("chat", "history")).join("\n"), /unknown tab chat/);
+  assert.equal(chapterForTab(BOOK, "chat"), null);
+  assert.equal(chapterById(BOOK, "sessions"), null);
+  assert.equal(chapterById(BOOK, "sessions-history"), null);
+});
+
+test("remove-sessions D13: code.history routes to Code with pane history and anchors on Code ▸ History", () => {
+  const code = chapterById(BOOK, "code")!;
+  const h = code.steps.find((s) => s.id === "history");
+  assert.ok(h);
+  assert.deepEqual([h.tab, h.pane, h.anchor], ["term", "history", '[data-tour="code-history"]']);
+  assert.equal(code.steps[code.steps.findIndex((s) => s.id === "foot") + 1]?.id, "history", "right after the foot that opens it");
+  assert.match(code.steps.find((s) => s.id === "foot")!.body, /All history\*\* opens every past session here/);
 });
 
 test("Tour this tab picks the Brain mode's chapter when it has one, else the tab's", () => {
@@ -100,12 +111,12 @@ test("a What's new entry's refs resolve to steps: a chapter id is all of it, cha
 });
 
 test("a What's new entry offers Show me only when one of its steps holds here (Task 16 minor 9)", () => {
-  const both: TourContext = { hosts: ["claude", "codex"], chat: true, checklist: true };
+  const both: TourContext = { hosts: ["claude", "codex"], checklist: true };
   const computer = WHATS_NEW.releases.find((r) => r.version === "2.5.0")!.entries.find((e) => e.id === "computer-pane")!;
   assert.equal(showable(BOOK, computer.steps, { ...both, computer: false }), false, "the Computer pane's steps are all gated while its surface is off");
   assert.equal(showable(BOOK, computer.steps, both), false, "unsaid is off");
   assert.equal(showable(BOOK, computer.steps, { ...both, computer: true }), true);
-  assert.equal(showable(BOOK, ["sessions.computer"], { ...both, chat: false, sessions: false, computer: true }), false, "a step whose chapter is gated");
+  assert.equal(showable(BOOK, ["code.chat-view"], { ...both, code: false }), false, "a step whose own when fails");
   assert.equal(showable(BOOK, ["code.computer", "core.rail"], { ...both, computer: false }), true, "one step that holds is enough");
   assert.equal(showable(BOOK, [], both), false);
   assert.equal(showable(BOOK, ["no-such.step"], both), false);

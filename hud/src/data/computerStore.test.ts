@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { HostComputer, HostComputerAsk, HostComputerEvent, HostComputerState } from "../host";
-import { ComputerStore, chatSession, codeSession, pageOfSession, pageToOpen, storeFor } from "./computerStore";
+import { ComputerStore, codeSession, pageOfSession, storeFor } from "./computerStore";
 
 function fakeComputer() {
   const subs: Array<(ev: HostComputerEvent) => void> = [];
@@ -24,16 +24,15 @@ const state = (session: string, o: Partial<HostComputerState> = {}): HostCompute
   session, label: "", tabs: [], holder: null, asks: [], log: [], marked: false, poppedOut: false, power: "awake", ...o,
 });
 
-test("pageOfSession reads the agent key's prefix: code:<terminal> is Code, chat:<thread> is Sessions", () => {
+test("remove-sessions D8: every page is Code: code:<terminal> is Code, a Sessions chat:<thread> key is no page's", () => {
   assert.equal(pageOfSession("code:t3"), "code");
-  assert.equal(pageOfSession("chat:5d2e"), "chat");
+  assert.equal(pageOfSession("chat:5d2e"), null, "main may still send a Sessions browser until PR 2 retires the key");
   assert.equal(pageOfSession("duty:wrap"), null);
   assert.equal(pageOfSession(""), null);
 });
 
-test("the session keys: codeSession and chatSession", () => {
+test("the session key: codeSession", () => {
   assert.equal(codeSession("t3"), "code:t3");
-  assert.equal(chatSession("5d2e"), "chat:5d2e");
 });
 
 test("the badges count pending asks across every browser, by the page their session belongs to", () => {
@@ -42,8 +41,7 @@ test("the badges count pending asks across every browser, by the page their sess
   f.emit({ type: "state", state: state("code:t5", { asks: [ask("a2", "code:t5", 20)] }) });
   f.emit({ type: "state", state: state("chat:th1", { asks: [ask("a1", "chat:th1", 10)] }) });
   f.emit({ type: "state", state: state("code:t7", { asks: [ask("a3", "code:t7", 30)] }) });
-  assert.equal(store.badge("code"), 2);
-  assert.equal(store.badge("chat"), 1);
+  assert.equal(store.badge("code"), 2, "a Sessions browser's ask counts on no page");
   assert.deepEqual(store.asks("code").map((a) => a.id), ["a2", "a3"], "oldest first");
   // The next state of a session replaces the last one: its answered asks are gone.
   f.emit({ type: "state", state: state("code:t5") });
@@ -64,11 +62,10 @@ test("the store keeps one state per session and a row's dot is its own browser's
   store.setOnScreen("code", "code:t5");
   assert.deepEqual(store.marks("code:t5"), { dot: false, waiting: false }, "on screen: no dot");
   assert.deepEqual(store.marks("code:t6"), { dot: true, waiting: false }, "another session's browser on screen changes nothing here");
+  f.emit({ type: "state", state: state("code:t6", { holder: { ...driving, session: "code:t6" }, asks: [ask("a1", "code:t6", 10)] }) });
+  store.setOnScreen("code", "code:t6");
+  assert.deepEqual(store.marks("code:t6"), { dot: true, waiting: true }, "an ask shows wherever the pane is");
   store.setOnScreen("code", null);
-  f.emit({ type: "state", state: state("chat:th1", { asks: [ask("a1", "chat:th1", 10)] }) });
-  assert.deepEqual(store.marks("chat:th1"), { dot: true, waiting: true }, "an ask shows wherever the pane is");
-  store.setOnScreen("chat", "chat:th1");
-  assert.deepEqual(store.marks("chat:th1"), { dot: true, waiting: true });
   assert.deepEqual(store.marks("code:t9"), { dot: false, waiting: false });
   assert.deepEqual(store.marks(null), { dot: false, waiting: false }, "a row with no session");
   // The person driving is no session's dot.
@@ -98,8 +95,8 @@ test("one subscription to the host for every reader of the same host; readers he
   let heard = 0;
   const off = a.subscribe(() => { heard++; });
   f.emit({ type: "state", state: state("code:t9") });
-  a.setOnScreen("chat", "code:t9");
-  a.setOnScreen("chat", "code:t9");
+  a.setOnScreen("code", "code:t9");
+  a.setOnScreen("code", "code:t9");
   assert.equal(heard, 2, "an unchanged on-screen session is no change");
   off();
   f.emit({ type: "state", state: state("code:t9") });
@@ -108,20 +105,12 @@ test("one subscription to the host for every reader of the same host; readers he
   assert.equal(f.subs.length, 0);
 });
 
-test("Open the Computer pane (R50): the page with asks, the oldest ask's page when both have some, else the page that last showed the pane, else Sessions", () => {
-  assert.equal(pageToOpen([ask("a1", "code:t5", 10)], "chat"), "code");
-  assert.equal(pageToOpen([ask("a1", "chat:th1", 10)], "code"), "chat");
-  assert.equal(pageToOpen([ask("a1", "chat:th1", 30), ask("a2", "code:t5", 20)], null), "code", "the oldest ask's page");
-  assert.equal(pageToOpen([ask("a1", "chat:th1", 10), ask("a2", "code:t5", 20)], "code"), "chat");
-  assert.equal(pageToOpen([], "code"), "code");
-  assert.equal(pageToOpen([], null), "chat");
+test("Open the Computer pane (R50; remove-sessions D8): always Code, the one page with a pane", () => {
   const f = fakeComputer();
   const store = new ComputerStore(f.host);
-  assert.equal(store.pageToOpen(), "chat");
-  store.noteShown("code");
-  assert.equal(store.pageToOpen(), "code", "the page that last showed the pane");
+  assert.equal(store.pageToOpen(), "code");
   f.emit({ type: "state", state: state("chat:th1", { asks: [ask("a1", "chat:th1", 10)] }) });
-  assert.equal(store.pageToOpen(), "chat");
+  assert.equal(store.pageToOpen(), "code");
 });
 
 test("a reveal is told to its readers and kept until a pane takes it; it is dropped once its ask has gone", () => {
@@ -129,7 +118,7 @@ test("a reveal is told to its readers and kept until a pane takes it; it is drop
   const store = new ComputerStore(f.host);
   const told: string[] = [];
   store.onReveal((id) => told.push(id));
-  f.emit({ type: "state", state: state("chat:th1", { asks: [ask("a1", "chat:th1", 10)] }) });
+  f.emit({ type: "state", state: state("code:t1", { asks: [ask("a1", "code:t1", 10)] }) });
   f.emit({ type: "reveal", askId: "a1" });
   assert.deepEqual(told, ["a1"]);
   assert.equal(store.revealing(), "a1");
@@ -137,7 +126,7 @@ test("a reveal is told to its readers and kept until a pane takes it; it is drop
   assert.equal(store.takeReveal("a1"), true);
   assert.equal(store.revealing(), null);
   f.emit({ type: "reveal", askId: "a1" });
-  f.emit({ type: "state", state: state("chat:th1") });
+  f.emit({ type: "state", state: state("code:t1") });
   assert.equal(store.revealing(), null, "answered elsewhere: nothing left to show");
 });
 
@@ -151,8 +140,9 @@ test("M5: a page's own ask (no agent holds the wheel) is routed by its browser: 
   assert.deepEqual(store.asks("code").map((a) => a.id), ["p1"]);
   assert.deepEqual(store.marks("code:t5"), { dot: true, waiting: true }, "its row waits on it");
   assert.equal(store.pageToOpen(), "code", "Open the Computer pane goes there too");
-  // An agent's own ask still goes by its session.
-  assert.deepEqual(store.route(ask("a1", "chat:th1", 20)), { page: "chat", session: "chat:th1" });
+  // An agent's own ask still goes by its session; an old Sessions browser's goes nowhere.
+  assert.deepEqual(store.route(ask("a1", "code:t6", 20)), { page: "code", session: "code:t6" });
+  assert.equal(store.route(ask("a2", "chat:th1", 20)), null);
   // A page ask on a browser that is no session's (nothing here can show it): nowhere.
   assert.equal(store.route({ ...ask("p2", "page", 30, "vault"), why: "permission" }), null);
 });

@@ -2,8 +2,7 @@ import { Notice, setIcon } from "obsidian";
 import * as path from "path";
 import type AgenticOSPlugin from "../../main";
 import { codeChatOn, fs, hudHost, sessionsHost, type HostCatalog } from "../host";
-import { aliasCatalog } from "../data/claudeAsk";
-import { HOST_LABEL, catalogHost, catalogModelId, hostChoices, sameModel, transcriptModelName, type HostChoice } from "../data/agentSessions";
+import { HOST_LABEL, aliasCatalog, catalogHost, catalogModelId, hostChoices, sameModel, transcriptModelName, type HostChoice } from "../data/agentSessions";
 import { readAgenticosJson, readProviderState } from "../data/aosConfig";
 import { hasChat, processKey, type TerminalSession } from "../data/terminalSession";
 import { TERM_ACCESS, TERM_ACCESS_LABEL, TERM_ACCESS_NOTE, TERM_HOST_LABEL, type TermAccess } from "../data/terminalLaunch";
@@ -356,6 +355,8 @@ export class TermComposer {
   private pickModel(model: string | null): void {
     const host = this.agent();
     if (!host) return;
+    // The pick is also the model new terminals of this host start with (remove-sessions D15), a pick of the one running too.
+    this.plugin.termLauncher.rememberModel(host, model);
     const next = model ?? (host === "claude" ? "default" : null);
     const cur = this.chips?.model ?? this.session?.meta.model ?? null;
     // The catalog's alias and the transcript's full id of one model are the same pick (M4): nothing restarts.

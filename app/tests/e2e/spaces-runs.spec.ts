@@ -385,17 +385,15 @@ test.describe("Spaces", () => {
     const boxes = await Promise.all([head.locator(".aos-spc-split"), ...(await acts.all())].map((b) => b.boundingBox()));
     for (let i = 1; i < boxes.length; i++) expect(boxes[i]!.x - (boxes[i - 1]!.x + boxes[i - 1]!.width)).toBeLessThan(24);
 
-    // The split menu (D5, D31, D32): a New row per host that is on (no Codex row: it is off on this machine), Terminal
-    // here, and Open last thread in Sessions, off with why. role=menu, the focus on its first row, Escape gives it back.
+    // The split menu (D5, D31; remove-sessions D5): a New row per host that is on (no Codex row: it is off on this
+    // machine) and Terminal here. role=menu, the focus on its first row, Escape gives it back.
     const caret = head.locator("button.aos-spc-caret");
     await expect(caret).toHaveAttribute("aria-haspopup", "menu");
     await caret.click();
     await expect(caret).toHaveAttribute("aria-expanded", "true");
     const items = menu().locator(".aos-spc-popitem");
-    await expect(items.locator(".aos-spc-poplabel")).toHaveText(["New Claude Code session", "Terminal here", "Open last thread in Sessions"]);
+    await expect(items.locator(".aos-spc-poplabel")).toHaveText(["New Claude Code session", "Terminal here"]);
     await expect(items.nth(0)).toBeFocused();
-    await expect(items.nth(2)).toHaveAttribute("aria-disabled", "true");
-    await expect(items.nth(2).locator(".aos-spc-popdetail")).toHaveText("Sessions is hidden: set up a model provider to use it");
     await h.win.keyboard.press("ArrowDown");
     await expect(items.nth(1)).toBeFocused();
     // The keyboard's row has a ring of its own, not only the hover tint.
@@ -687,7 +685,7 @@ test.describe("Spaces", () => {
     await expect(hist.locator(".aos-spc-emptyval")).toHaveText("No git here: link a code folder to see its commits.");
     await seg.nth(1).click();
     await expect(rows).toHaveCount(4);
-    // No app thread here, and Sessions is hidden without a provider: no "All n in Sessions →".
+    // No "All n in Sessions →" any more (remove-sessions D5).
     await expect(hist.locator(".aos-spc-more")).toHaveCount(0);
 
     // A workspace's own repository: its commit with the short hash, under Commits and All.
@@ -753,11 +751,10 @@ test.describe("Spaces", () => {
     await expect(row("reef-survey").locator(".aos-spc-rowcount")).toHaveCount(0);
     await expect(linked.locator(".aos-spc-emptyval")).toHaveText("Nothing links to this space: no to-dos, proposals or memory notes name it.");
 
-    // The footer (D10, D32): Threads in Sessions is off without a provider, and says why; Terminals in Code opens Code
-    // on this workspace's group, which only selects.
+    // The footer (D10; remove-sessions D5): Terminals in Code alone, which opens Code on this workspace's group and only
+    // selects.
     const foot = R().locator(".aos-spc-rightfoot");
-    await expect(foot.locator("button", { hasText: "Threads in Sessions →" })).toBeDisabled();
-    await expect(foot.locator(".aos-spc-why")).toHaveText("Sessions is hidden: set up a model provider to use it");
+    await expect(foot.locator("button", { hasText: "Threads in Sessions →" })).toHaveCount(0);
     await foot.locator("button", { hasText: "Terminals in Code →" }).click();
     await expect(rail(win, "term")).toHaveClass(/is-active/);
     await expect(C().locator(".aos-tl-scope")).toHaveClass(/is-on/);

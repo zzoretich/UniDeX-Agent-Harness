@@ -91,7 +91,7 @@ does not — `agenticos.json` is merged last and `aos init` writes it there; see
 
 Raise `perDayUsd` if you schedule more duties or a bigger `perDutyUsd`; with the defaults three
 $2 runs fit in one day. The other daily caps are separate and never block a duty: `claude.perDayUsd` (0.5) for the
-background hook calls when a host answers them (session summary, wrap), `reasoner.perDayUsd` for Vault chat and the
+background hook calls when a host answers them (session summary, wrap), `reasoner.perDayUsd` for the
 reasoner commands, `routines.perDayUsd` for prompt routines. Under provider `local` most of that work runs on this
 Mac's model and spends nothing ([cost.md](cost.md#what-background-work-spends)). A duty must append a `## HH:MM — duty: <name>` entry to the journal; otherwise the
 runner records FAILED and adds a flag to `STATE.md`. A duty that runs past `PERSONA_TIMEOUT`

@@ -14,7 +14,7 @@ export interface TourStep {
   tab?: string;
   /** Brain only: the mode to show. */
   mode?: string;
-  /** Spaces: the pane to show for the selected workspace; Sessions: "history", its History (install-import B11); Agent
+  /** Spaces: the pane to show for the selected workspace; Code: "history", Code ▸ History (remove-sessions D13); Agent
    *  Workspace: "needs", "team" or "agent", the pane to show by kind (agent-workspace D18). */
   pane?: string;
   /** A CSS selector for the one control the step spotlights. */
@@ -64,11 +64,11 @@ export interface TourBook {
 }
 
 /** The tabs a step may route to (WorkbenchView WORKBENCH_TAB_IDS; kept here so this module stays import-free of views). */
-export const TOUR_TABS = ["notifications", "pulse", "term", "chat", "agent-teams", "todo", "spaces", "files", "routines", "proposals", "memory", "skills", "connectors", "runs", "settings"];
+export const TOUR_TABS = ["notifications", "pulse", "term", "agent-teams", "todo", "spaces", "files", "routines", "proposals", "memory", "skills", "connectors", "runs", "settings"];
 const TOUR_MODES: readonly string[] = BRAIN_MODES;
 const TOUR_PANES: readonly string[] = SPACES_PANES;
-/** The Sessions tab's one pane a step may show: History (install-import B11). */
-const SESSIONS_PANES: readonly string[] = ["history"];
+/** Code's one pane a step may show: History (remove-sessions D13; install-import B11 had it in Sessions). */
+const CODE_PANES: readonly string[] = ["history"];
 /** The Agent Workspace's panes by kind (data/workspace.ts WORKSPACE_PANES; kept here so this module stays import-free of
  *  the tab's data): Needs you, the selected or first team, the selected or first agent (agent-workspace D18). */
 const WORKSPACE_PANES: readonly string[] = ["needs", "team", "agent"];
@@ -110,9 +110,9 @@ export function validateBook(book: unknown, o: { selectorOk?: (s: string) => boo
       stepIds.add(s.id);
       if (s.tab !== undefined && !TOUR_TABS.includes(s.tab)) out.push(`${where}: unknown tab ${s.tab}`);
       if (s.mode !== undefined && (s.tab !== "memory" || !TOUR_MODES.includes(s.mode))) out.push(`${where}: mode ${s.mode} needs tab memory and a Brain mode`);
-      if (s.pane !== undefined && !((s.tab === "spaces" && TOUR_PANES.includes(s.pane)) || (s.tab === "chat" && SESSIONS_PANES.includes(s.pane))
+      if (s.pane !== undefined && !((s.tab === "spaces" && TOUR_PANES.includes(s.pane)) || (s.tab === "term" && CODE_PANES.includes(s.pane))
         || (s.tab === "agent-teams" && WORKSPACE_PANES.includes(s.pane)))) {
-        out.push(`${where}: pane ${s.pane} needs tab spaces and a Spaces pane, tab chat and history, or tab agent-teams and needs, team or agent`);
+        out.push(`${where}: pane ${s.pane} needs tab spaces and a Spaces pane, tab term and history, or tab agent-teams and needs, team or agent`);
       }
       if (typeof s.anchor !== "string" || !s.anchor.trim()) out.push(`${where}: no anchor`);
       else if (o.selectorOk && !o.selectorOk(s.anchor)) out.push(`${where}: anchor is not a valid selector: ${s.anchor}`);
