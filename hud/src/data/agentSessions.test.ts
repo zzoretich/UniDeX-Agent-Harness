@@ -5,7 +5,7 @@ import {
   ACCESS_LEVELS, CODEX_ACCESS_NOTE, DEFAULT_ACCESS, EFFORT_TITLE, SESSION_EFFORTS, VAULT_EFFORTS, accessHostLine, accessLabel,
   catalogHost, catalogSource, chipText, choiceText, commandQuery, commandTyping, countsText, defaultChoice, diffTotals,
   doneFooter, doneLine, durationText, effortLabel, effortsFor, fileCounts, fileStatusLabel, filterCommands, findModel,
-  hostChoices, isAccess, lastTurnUsd, mergeEvents, modelArg, modelName, relPath, searchModels, sessionSpendToday, spendLine, splitModels, statusSummary, threadAge,
+  hostChoices, isAccess, lastTurnUsd, mergeEvents, modelArg, modelName, relPath, searchModels, spendLine, splitModels, statusSummary,
   catalogModelId, sameModel, transcriptModelName,
   threadRows, timelineRows, toolCallLine, toolLine, toolResultText, turnChoices, turnElapsed, turnOpen, usdText,
   workingText, workspaceNames, type CatalogCommand, type ThreadRow, type ToolCall,
@@ -522,12 +522,6 @@ test("diffTotals, countsText and fileCounts: +/− across files, a binary file c
   assert.equal(fileCounts(null, "src/a.ts"), null);
 });
 
-test("threadAge: the list's short age", () => {
-  const at = (s: number) => new Date(NOW.getTime() - s * 1000).toISOString();
-  assert.deepEqual([at(10), at(12 * 60), at(3 * 3600), at(2 * 86400)].map((t) => threadAge(t, NOW)), ["now", "12m", "3h", "2d"]);
-  assert.equal(threadAge(at(30 * 86400), NOW), at(30 * 86400).slice(0, 10));
-});
-
 test("turnChoices and doneLine: a finished turn names its model, effort, length and cost", () => {
   const events = [
     ev("prompt", 1, { text: "a", model: "opus", effort: "high", access: "edit" }),
@@ -549,20 +543,7 @@ test("lastTurnUsd: the last done's spend, else its usage's; null before a turn e
   assert.equal(lastTurnUsd([ev("done", 1, { ok: false })]), null);
 });
 
-test("sessionSpendToday and spendLine: today's session:* rows against the cap", () => {
-  const now = new Date(2026, 9, 7, 15, 0, 0);
-  const at = (h: number, d = 7) => new Date(2026, 9, d, h, 0, 0).toISOString();
-  const ledger = [
-    JSON.stringify({ ts: at(9), feature: "session:claude", usd: 1.2 }),
-    JSON.stringify({ ts: at(10), feature: "session:codex", usd: 0.64 }),
-    JSON.stringify({ ts: at(11), feature: "reason:chat", usd: 3 }),
-    JSON.stringify({ ts: at(9, 6), feature: "session:claude", usd: 5 }),
-    "{\"ts\":\"torn session:",
-    JSON.stringify({ ts: "bad", feature: "session:claude", usd: 1 }),
-    "",
-  ].join("\n");
-  assert.equal(sessionSpendToday(ledger, now), 1.84);
-  assert.equal(sessionSpendToday("", now), 0);
+test("spendLine: the spend against the cap", () => {
   assert.deepEqual(spendLine(1.84, 10), { text: "$1.84 of $10", ratio: 0.184 });
   assert.deepEqual(spendLine(12, 10), { text: "$12.00 of $10", ratio: 1 });
   assert.deepEqual(spendLine(0, 2.5), { text: "$0.00 of $2.50", ratio: 0 });

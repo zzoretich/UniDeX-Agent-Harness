@@ -1,8 +1,8 @@
 'use strict';
 /**
  * host-catalog.js — what each agent CLI says it can run: its models, with the effort levels each takes, and the
- * commands a prompt may start with (spec 2026-10-07-sessions-ux U3–U5, U8). The app's Sessions tab builds its host and
- * model menu and its `/` menu from this, so no model list is kept by hand. Nothing here calls a model:
+ * commands a prompt may start with (spec 2026-10-07-sessions-ux U3–U5, U8). The app's Code composer and Routines build
+ * their model menus and the `/` menu from this, so no model list is kept by hand. Nothing here calls a model:
  *
  *   claude: one `initialize` control request to `claude -p --input-format stream-json --output-format stream-json`
  *           (the path the Agent SDK's supportedModels() and supportedCommands() take); the process is ended as soon as

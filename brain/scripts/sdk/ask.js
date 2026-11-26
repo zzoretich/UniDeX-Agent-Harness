@@ -7,11 +7,9 @@
  *   --context (default)  print the assembled prompt; Claude answers in-session
  *   --write <file>       print the answer file (ask has no persistent target)
  *   --local              answer through the provider; telemetry run-id on stderr
- *     --host=claude|codex  with --local: that host only, never another (Vault chat's menu, spec 2026-10-07-sessions-ux U9)
+ *     --host=claude|codex  with --local: that host only, never another (spec 2026-10-07-sessions-ux U9)
  *     --model=<id>         with --local: that model instead of the reasoner's
  *     --effort=<level>     with --local: that effort, when the host's CLI takes it
- *     --chat               with --local: a Vault chat question (feature reason:chat): under provider local it runs where
- *                          ai.chat says, not ai.ask (local-first A2)
  *
  * Usage:
  *   node brain/scripts/sdk/ask.js "what did I decide about model routing?"
@@ -28,14 +26,13 @@ const pathx = require('path');
 const { VAULT } = require('../lib/paths.js');
 const { parseMode, printContext, readWriteFile, localProvider } = require('./lib/interactive.js');
 
-/** --host=, --model= and --effort= (one argument each, so a question never swallows their values), --chat, and the rest. */
+/** --host=, --model= and --effort= (one argument each, so a question never swallows their values), and the rest. */
 function askOptions(argv) {
   const opts = {};
   const rest = [];
   for (const a of argv) {
     const m = /^--(host|model|effort)=(.*)$/.exec(a);
     if (m) opts[m[1]] = m[2];
-    else if (a === '--chat') opts.chat = true;
     else rest.push(a);
   }
   if (opts.host !== undefined && !['claude', 'codex'].includes(opts.host)) throw new Error('--host takes claude or codex');
@@ -139,8 +136,8 @@ async function main() {
   if (mode === 'context') { printContext({ feature: 'ask', system, context: question, format: ASK_FORMAT }); return; }
 
   const chosen = asked.opts.host || asked.opts.model || asked.opts.effort;
-  // Vault chat's questions are reason:chat rows and follow ai.chat; a question asked here is reason:ask (ai.ask).
-  const feature = asked.opts.chat ? 'reason:chat' : 'reason:ask';
+  // A question asked here is a reason:ask row and follows ai.ask (Vault chat's reason:chat went, remove-sessions D12).
+  const feature = 'reason:ask';
   let p;
   try {
     p = await localProvider(feature, { role: 'reasoner', prefer: asked.opts.host, model: asked.opts.model, effort: asked.opts.effort });

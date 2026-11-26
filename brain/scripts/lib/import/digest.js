@@ -4,7 +4,7 @@
  * import/digest.js — the history digest (install-import B5, B10, B15), and the `import-digest` command routine's entry.
  *
  *   queueSessions(state, …)   (from `aos import`) every interactive session of the chosen hosts in the window, newest
- *                             first, that is not digested yet, not a Sessions thread or a team seat, not headless and not
+ *                             first, that is not digested yet, not a team seat, not headless and not
  *                             active in the last hour (auto-wrap owns a live session): state.digest = { since,
  *                             windowDays, hosts, queuedAt, processed, total, queue: [{ key, host, id, file, startedAt,
  *                             lastAt, title, cwd, workspace }], … }. A second import adds what is new to what is left.
@@ -150,7 +150,7 @@ function queueSessions(state, { vault, collected, hosts, since, windowDays, now 
   const fresh = [];
   for (const s of collected.collected.sessions || []) {
     if (!hosts.includes(s.host) || !s.id || !s.file) continue;
-    if (s.kind !== 'interactive' || s.app || s.team) continue;
+    if (s.kind !== 'interactive' || s.team) continue;
     const last = msOf(s.lastAt);
     if (last < cutoff || now - last < LIVE_MS) continue;
     const key = `${s.host}:${String(s.id).toLowerCase()}`;

@@ -22,7 +22,7 @@ const C = { dim: '2', bold: '1', green: '32', yellow: '33', orange: '38;5;208', 
 const paint = (code, s) => (s ? `${E}${code}m${s}${E}0m` : '');
 const SEP = ` ${paint(C.dim, '│')} `;
 const ANSI_RE = /\x1b\[[0-9;]*m|\x1b\]8;;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
-const FAMILY_LABEL = { hooks: 'hooks', duties: 'duties', reasoner: 'reasoner', routines: 'routines', graph: 'graph', crossReview: 'cross-review', sessions: 'sessions' };
+const FAMILY_LABEL = { hooks: 'hooks', duties: 'duties', reasoner: 'reasoner', routines: 'routines', graph: 'graph', crossReview: 'cross-review' };
 const DEFAULT_SEGMENTS = ['needs-you', 'runs', 'spend', 'health'];
 
 const plain = (s) => String(s).replace(ANSI_RE, '');

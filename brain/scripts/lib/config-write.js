@@ -130,4 +130,13 @@ function invalidValues(obj) {
   return out;
 }
 
-module.exports = { ConfigFileError, readStrict, writeAtomic, hasPath, getPath, setPath, unsetPath, resolve, targetFile, unknownKeys, invalidValues };
+/** Keys a release retired (remove-sessions D12: Sessions and Vault chat went), which `aos upgrade` takes out of the vault's
+ *  config so doctor never warns about them as unknown. */
+const RETIRED_KEYS = ['sessions', 'ai.chat'];
+
+/** Removes each retired key `obj` holds (an object left empty goes too) and returns the keys it removed, in list order. */
+function dropRetired(obj) {
+  return RETIRED_KEYS.filter((k) => unsetPath(obj, k));
+}
+
+module.exports = { ConfigFileError, readStrict, writeAtomic, hasPath, getPath, setPath, unsetPath, resolve, targetFile, unknownKeys, invalidValues, RETIRED_KEYS, dropRetired };

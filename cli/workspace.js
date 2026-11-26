@@ -17,9 +17,9 @@
  *                                    nothing moves (D16). The path must be a current outside row's folder
  *   adopt <path> [--name <slug>]     move a project folder into workspaces/ and add the missing stubs (terminals only)
  *   archive <ws> [--json]            workspaces/<ws> → workspaces/_archive/<ws>, its map too; project notes' status tag
- *                                    flips to status/archived; its Sessions threads stay, read-only (D17)
+ *                                    flips to status/archived
  *   restore <ws> [--json]            workspaces/_archive/<ws> → workspaces/<ws>, the reverse of archive
- *   rename <ws> <new-name> [--json]  the folder, its map and its Sessions threads move; `aliases:` keeps the old name
+ *   rename <ws> <new-name> [--json]  the folder and its map move; `aliases:` keeps the old name
  *   hide <path> | unhide <path> [--json]
  *                                    an outside folder into or out of brain/_index/workspaces-hidden.json (D21)
  *   draft <ws> [--json]              a summary, objectives and next step for workspace.md, for review: no workspace file
@@ -34,8 +34,8 @@
  * and hide's must be the folder of a current outside row, unhide's a stored entry. The verbs write only under
  * workspaces/** and brain/_index/**, plus one exception: the `status/` tag line of a project note in
  * brain/memory/projects/ linked by `workspace:` or its exact slug (never through a symlink). Folders move only between
- * workspaces/ and workspaces/_archive/; nothing is deleted. archive, restore and rename refuse a running team item, a
- * Sessions turn left unfinished in the last 30 minutes and a repository with linked git worktrees; every moving verb
+ * workspaces/ and workspaces/_archive/; nothing is deleted. archive, restore and rename refuse a running team item and a
+ * repository with linked git worktrees; every moving verb
  * (adopt's move form included) refuses a headless run (AOS_HEADLESS=1). Each write is atomic and follows no link, and
  * each verb that writes refreshes the snapshot's workspaces and outside rows (no model call).
  *
@@ -59,9 +59,6 @@ const KEBAB_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 // set --expect (surfaces.ts HASH): workspace.md's sha256 as `draft` read it, or `none` for a workspace without one.
 const HASH_RE = /^(?:none|[0-9a-f]{16,64})$/;
 const LINE_BREAKS = /[\0\n\r\u2028\u2029]/;
-// A Sessions turn whose prompt has no `done` after it and is younger than this is taken as running (spec §6).
-const TURN_WINDOW_MS = 30 * 60 * 1000;
-const THREAD_TAIL_BYTES = 1024 * 1024;
 const MAX_TEXT = 256 * 1024;
 const SMALL = 4096;
 
@@ -649,53 +646,6 @@ function runningTeamItems(ctx) {
   return out;
 }
 
-/** The titles of the Sessions threads in brain/_index/sessions/<name>/ with a turn left unfinished in the last 30 minutes. */
-function runningTurns(ctx, name, nowMs) {
-  const dir = path.join(ctx.vault, 'brain', '_index', 'sessions', name);
-  const out = [];
-  for (const f of readdirSafe(dir).filter((n) => n.endsWith('.jsonl')).sort()) {
-    const file = path.join(dir, f);
-    const st = lstatOrNull(file);
-    if (!st || !st.isFile()) continue;
-    let text = '';
-    let cut = false;
-    let title = f.replace(/\.jsonl$/, '');
-    try {
-      const fd = fs.openSync(file, 'r');
-      try {
-        const head = Buffer.alloc(Math.min(st.size, 64 * 1024));
-        fs.readSync(fd, head, 0, head.length, 0);
-        try { const meta = JSON.parse(head.toString('utf8').split('\n')[0]); if (meta && typeof meta.title === 'string' && meta.title) title = meta.title; } catch { /* untitled */ }
-        const len = Math.min(st.size, THREAD_TAIL_BYTES);
-        const tail = Buffer.alloc(len);
-        fs.readSync(fd, tail, 0, len, st.size - len);
-        text = tail.toString('utf8');
-        cut = len < st.size;
-      } finally { fs.closeSync(fd); }
-    } catch { continue; }
-    // The newest `done` or `prompt` decides: a prompt with no done after it, younger than the window, is running.
-    let verdict = null;
-    const lines = text.split('\n');
-    for (let i = lines.length - 1; i >= (cut ? 1 : 0); i--) {
-      if (!lines[i].includes('"kind"')) continue;
-      let r;
-      try { r = JSON.parse(lines[i]); } catch { continue; }
-      if (!r || typeof r !== 'object') continue;
-      if (r.kind === 'done') { verdict = false; break; }
-      if (r.kind === 'prompt') {
-        // The prompt's time or the file's: a long turn still appending its events keeps the file fresh.
-        const t = Date.parse(r.t || '');
-        verdict = Math.max(Number.isFinite(t) ? t : 0, st.mtimeMs) > nowMs - TURN_WINDOW_MS;
-        break;
-      }
-    }
-    // A turn whose output outgrew the tail: no prompt and no done in sight, so the file's age decides.
-    if (verdict === null && cut) verdict = st.mtimeMs > nowMs - TURN_WINDOW_MS;
-    if (verdict) out.push(title);
-  }
-  return out;
-}
-
 /** A repository's linked worktrees ({ list }), or { self } when the folder is itself a linked worktree; null if neither. */
 function linkedWorktrees(dir) {
   const g = path.join(dir, '.git');
@@ -715,15 +665,12 @@ function linkedWorktrees(dir) {
   return list.length ? { list } : null;
 }
 
-/** The refusals every move shares (spec §6): a running team item, an unfinished Sessions turn, linked worktrees.
- *  `threads`: the name its Sessions threads are kept under (Restore's original name). */
-function refuseBusy(ctx, name, dir, manifest, nowMs, threads = name) {
+/** The refusals every move shares (spec §6): a running team item, linked worktrees. */
+function refuseBusy(ctx, name, dir, manifest) {
   const WM = manifestLib();
   const roots = [dir, WM.repoPath(manifest.repo, ctx.vault, ctx.home), ...(manifest.aliases || []).map((a) => aliasAbs(ctx, a))].filter(Boolean);
   const team = runningTeamItems(ctx).filter((r) => r.path && roots.some((root) => insideAnySpelling(r.path, root)));
   if (team.length) throw new Error(`refusing to move ${name}: a team run is working on it (${team.map((t) => `${t.team}/${t.item}`).join(', ')}); let it finish first`);
-  const turns = runningTurns(ctx, threads, nowMs);
-  if (turns.length) throw new Error(`refusing to move ${name}: a Sessions turn there has not finished (${turns.map((t) => JSON.stringify(t)).join(', ')}); let it finish, or stop it in Sessions`);
   const wt = linkedWorktrees(dir);
   if (wt && wt.self) {
     throw new Error(`refusing to move ${name}: it is a linked git worktree of ${shorten(wt.self, ctx.home)}, and moving it breaks git's link; move it by hand and run \`git worktree repair\` in it`);
@@ -877,59 +824,6 @@ function runBrainMd(ctx, opts) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-function threadsDir(ctx, name) { return path.join(ctx.vault, 'brain', '_index', 'sessions', name); }
-function threadCount(ctx, name) { return readdirSafe(threadsDir(ctx, name)).filter((n) => n.endsWith('.jsonl')).length; }
-
-/** Rewrite each thread's meta line (line one) from `workspace: from` to `to`, atomically; the rest is kept byte for byte. */
-function rewriteThreadMeta(dir, from, to, only = null) {
-  const fsx = resolveModule('lib/fsx.js');
-  const done = [];
-  for (const f of readdirSafe(dir).filter((n) => n.endsWith('.jsonl')).sort()) {
-    if (only && !only.includes(f)) continue;
-    const file = path.join(dir, f);
-    const st = lstatOrNull(file);
-    if (!st || !st.isFile()) continue;
-    let buf;
-    try { buf = fs.readFileSync(file); } catch { continue; }
-    const nl = buf.indexOf(0x0a);
-    let meta;
-    try { meta = JSON.parse((nl === -1 ? buf : buf.subarray(0, nl)).toString('utf8')); } catch { continue; }
-    if (!meta || meta.kind !== 'meta' || meta.workspace !== from) continue;
-    const line = Buffer.from(JSON.stringify({ ...meta, workspace: to }), 'utf8');
-    fsx.writeAtomic(file, nl === -1 ? line : Buffer.concat([line, buf.subarray(nl)]));
-    // A new meta line is no activity: the file keeps its times, so a turn left unfinished long ago still reads as old.
-    try { fs.utimesSync(file, st.atime, st.mtime); } catch { /* times are a courtesy */ }
-    done.push(f);
-  }
-  return done;
-}
-
-/** What Rename does with brain/_index/sessions/<from>/; refused before anything moves when a name would collide. */
-function planThreads(ctx, from, to) {
-  let root = null;
-  try { root = runtimeDir(ctx, 'brain/_index/sessions'); } catch (e) { throw new Error(`refusing to rename ${from}: ${e.message}`); }
-  if (!root) return { src: threadsDir(ctx, from), dst: threadsDir(ctx, to), names: [], merge: false, none: true };
-  const src = path.join(root, from);
-  const dst = path.join(root, to);
-  const sst = lstatOrNull(src);
-  if (!sst) return { src, dst, names: [], merge: false, none: true };
-  if (!sst.isDirectory()) throw new Error(`refusing to rename ${from}: brain/_index/sessions/${from} is not a folder`);
-  const dstSt = lstatOrNull(dst);
-  if (dstSt && !dstSt.isDirectory()) throw new Error(`refusing to rename ${from}: brain/_index/sessions/${to} is not a folder`);
-  const names = readdirSafe(src).sort();
-  const clash = dstSt ? names.filter((n) => lstatOrNull(path.join(dst, n))) : [];
-  if (clash.length) throw new Error(`refusing to rename ${from}: brain/_index/sessions/${to} already holds ${clash.join(', ')}`);
-  return { src, dst, names, merge: !!dstSt, none: false };
-}
-
-function moveThreads(plan) {
-  if (plan.none) return [];
-  if (!plan.merge) { fs.renameSync(plan.src, plan.dst); return plan.names; }
-  for (const n of plan.names) fs.renameSync(path.join(plan.src, n), path.join(plan.dst, n));
-  try { fs.rmdirSync(plan.src); } catch { /* not empty: something arrived meanwhile, and stays */ }
-  return plan.names;
-}
-
 /** An existing workspace for a move: its folder and manifest (a symlinked workspace.md refuses the move); reserved names refused. */
 function movable(ctx, name, verb, { archived = false } = {}) {
   const WM = manifestLib();
@@ -951,7 +845,7 @@ async function archiveWorkspace(ctx, name, opts = {}) {
   const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
   refuseHeadless(opts.env || ctx.env, 'aos workspace archive');
   const { dir, cur } = movable(ctx, name, 'archive');
-  refuseBusy(ctx, name, dir, cur.manifest, nowMs);
+  refuseBusy(ctx, name, dir, cur.manifest);
   const WM = manifestLib();
   // workspaces/_archive and the maps' _archive as plain folders of the vault; a link or a file there refuses (§6).
   let root;
@@ -989,14 +883,12 @@ async function archiveWorkspace(ctx, name, opts = {}) {
   }
   const brainMd = notes.length ? runBrainMd(ctx, opts) : null;
   const rescanned = await refreshSnapshot(ctx, opts);
-  const threads = threadCount(ctx, name);
   emit(io, opts.json, {
-    ok: true, name, archivedAs: `${ARCHIVE}/${dest}`, path: `workspaces/${ARCHIVE}/${dest}`, archived: day, map: !!map, notes, brainMd, threads, rescanned,
+    ok: true, name, archivedAs: `${ARCHIVE}/${dest}`, path: `workspaces/${ARCHIVE}/${dest}`, archived: day, map: !!map, notes, brainMd, rescanned,
   }, [
     `archived workspaces/${name} → workspaces/${ARCHIVE}/${dest}`,
     ...(map ? ['  its map moved to workspace-maps/_archive/'] : []),
     ...notes.map((n) => `  ${n}: status/archived`),
-    ...(threads ? [`  ${threads} Sessions thread${threads === 1 ? '' : 's'} stay, read-only until it is restored`] : []),
     `restore it with: aos workspace restore ${dest}`,
   ]);
   return 0;
@@ -1014,7 +906,6 @@ function restoreTarget(cur, name) {
 
 async function restoreWorkspace(ctx, name, opts = {}) {
   const io = opts.io || console;
-  const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
   refuseHeadless(opts.env || ctx.env, 'aos workspace restore');
   // movable checks workspaces/ and workspaces/_archive as plain folders of the vault, as archive does (§6).
   const { dir, cur } = movable(ctx, name, 'restore', { archived: true });
@@ -1022,7 +913,7 @@ async function restoreWorkspace(ctx, name, opts = {}) {
   const target = restoreTarget(cur, name);
   const root = WM.workspacesRoot(ctx.vault);
   if (lstatOrNull(path.join(root, target))) throw new Error(`refusing to restore ${name}: workspaces/${target} already exists`);
-  refuseBusy(ctx, target, dir, cur.manifest, nowMs, target);
+  refuseBusy(ctx, target, dir, cur.manifest);
   let map;
   try { map = planMap(ctx, { archived: true, name }, { archived: false, name: target }); } catch (e) { throw new Error(`refusing to restore ${name}: ${e.message}`); }
   const names = [target, ...formerNames(ctx, cur.manifest.aliases, target)];
@@ -1042,8 +933,7 @@ async function restoreWorkspace(ctx, name, opts = {}) {
   try { WM.setManifest(moved, { archived: null, archivedNotes: null, archivedFrom: null }); } catch { /* harmless leftovers */ }
   const brainMd = notes.length ? runBrainMd(ctx, opts) : null;
   const rescanned = await refreshSnapshot(ctx, opts);
-  const threads = threadCount(ctx, target);
-  emit(io, opts.json, { ok: true, name: target, path: `workspaces/${target}`, ...(target !== name ? { restoredFrom: `${ARCHIVE}/${name}` } : {}), map: !!map, notes, brainMd, threads, rescanned }, [
+  emit(io, opts.json, { ok: true, name: target, path: `workspaces/${target}`, ...(target !== name ? { restoredFrom: `${ARCHIVE}/${name}` } : {}), map: !!map, notes, brainMd, rescanned }, [
     `restored workspaces/${ARCHIVE}/${name} → workspaces/${target}`,
     ...(map ? ['  its map moved back'] : []),
     ...notes.map((n) => `  ${n}: status/active`),
@@ -1053,7 +943,6 @@ async function restoreWorkspace(ctx, name, opts = {}) {
 
 async function renameWorkspace(ctx, name, next, opts = {}) {
   const io = opts.io || console;
-  const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
   refuseHeadless(opts.env || ctx.env, 'aos workspace rename');
   if (typeof next !== 'string' || !KEBAB_RE.test(next)) {
     throw new Error(`refusing to rename ${name}: the new name must be lowercase kebab-case, as ${JSON.stringify(slugify(next) || 'my-project')} (at most 64 characters)`);
@@ -1065,8 +954,7 @@ async function renameWorkspace(ctx, name, next, opts = {}) {
   const root = WM.workspacesRoot(ctx.vault);
   if (lstatOrNull(path.join(root, next))) throw new Error(`refusing to rename ${name}: workspaces/${next} already exists`);
   if (lstatOrNull(path.join(root, ARCHIVE, next))) throw new Error(`refusing to rename ${name}: "${next}" is held by an archived workspace (workspaces/_archive/${next})`);
-  refuseBusy(ctx, name, dir, cur.manifest, nowMs);
-  const plan = planThreads(ctx, name, next);
+  refuseBusy(ctx, name, dir, cur.manifest);
   let map;
   try { map = planMap(ctx, { archived: false, name }, { archived: false, name: next }); } catch (e) { throw new Error(`refusing to rename ${name}: ${e.message}`); }
   // The folder moves last (the plan's Risks): every earlier step is safe to repeat, so a run cut short is finished by
@@ -1074,33 +962,21 @@ async function renameWorkspace(ctx, name, next, opts = {}) {
   const aliases = withAlias(ctx, cur.manifest.aliases, `workspaces/${name}`);
   if (aliases) WM.setManifest(dir, { aliases });
   applyMap(ctx, map);
-  const moved = moveThreads(plan);
-  // Each moved thread's meta line names the new workspace, so its next turn resolves it (D17); a thread that an earlier
-  // run cut short moved without rewriting is caught here too.
-  const rewritten = rewriteThreadMeta(plan.dst, name, next);
   const target = path.join(root, next);
   try {
     fs.renameSync(dir, target);
   } catch (e) {
-    try {
-      rewriteThreadMeta(plan.dst, next, name, rewritten);
-      if (moved.length && !plan.merge) fs.renameSync(plan.dst, plan.src);
-      else if (moved.length) { fs.mkdirSync(plan.src, { recursive: true }); for (const n of moved) fs.renameSync(path.join(plan.dst, n), path.join(plan.src, n)); }
-    } catch { /* best effort: running it again finishes the rename */ }
     revertMap(map);
     throw new Error(`could not move workspaces/${name} to workspaces/${next}: ${e.message}`);
   }
   const rescanned = await refreshSnapshot(ctx, opts);
-  const threadsMoved = moved.filter((n) => n.endsWith('.jsonl')).length;
   // A repository of its own gets a new path: Codex asks once to trust it, as after adopt's move (host parity).
   const repo = exists(path.join(target, '.git'));
   emit(io, opts.json, {
-    ok: true, from: name, name: next, path: `workspaces/${next}`, alias: `workspaces/${name}`, map: !!map,
-    threads: { moved: threadsMoved, rewritten: rewritten.length }, rescanned,
+    ok: true, from: name, name: next, path: `workspaces/${next}`, alias: `workspaces/${name}`, map: !!map, rescanned,
   }, [
     `renamed workspaces/${name} → workspaces/${next} (aliases: keeps workspaces/${name})`,
     ...(map ? ['  its map moved'] : []),
-    ...(threadsMoved ? [`  ${threadsMoved} Sessions thread${threadsMoved === 1 ? '' : 's'} moved and renamed`] : []),
     ...(repo ? ['note: Codex asks once to trust the new path; the old path\'s trust entry in its config.toml is harmless'] : []),
   ]);
   return 0;
@@ -1265,7 +1141,7 @@ async function main(argv, opts = {}) {
 
 module.exports = {
   VERBS, RESERVED, SCRATCH, KEBAB_RE, HASH_RE, UsageError, main, resolveCtx, slugify, stubs, completeStubs, newWorkspace,
-  adoptWorkspace, listWorkspaces, whichWorkspace, flipProjectNotes, runningTurns, linkedWorktrees, ago,
+  adoptWorkspace, listWorkspaces, whichWorkspace, flipProjectNotes, linkedWorktrees, ago,
   // The importer (install-import B9) creates several workspaces with rescan: false, then refreshes the snapshot once.
   refreshSnapshot,
 };

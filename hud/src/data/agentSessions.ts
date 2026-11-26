@@ -418,35 +418,7 @@ export function fileCounts(st: HostGitStatus | null, path: string, root?: string
   return f ? { added: f.added, removed: f.removed } : null;
 }
 
-// ── the list (spec 2026-10-07-sessions-ux U1: New session, Vault, then each workspace folder with its threads) ──
-
-/** A thread's age in the list, as short as it fits: now, 12m, 3h, 2d, then the date. */
-export function threadAge(iso: string, now: Date): string {
-  const text = ago(iso, now);
-  return text === "just now" ? "now" : text.replace(/ ago$/, "");
-}
-
-/**
- * Today's session spend from the spend ledger's text (brain/_index/provider-spend.jsonl): the `session:*` rows of the
- * local day of `now`, as the runtime's sessionSpendToday sums them against sessions.perDayUsd. Torn lines are skipped.
- */
-export function sessionSpendToday(ledger: string, now: Date): number {
-  const day = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-  const today = day(now);
-  let sum = 0;
-  for (const line of ledger.split("\n")) {
-    if (!line.includes("\"session:")) continue;
-    let r: Record<string, unknown>;
-    try { r = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-    if (!r || !str(r.feature).startsWith("session:")) continue;
-    const t = new Date(str(r.ts));
-    if (Number.isNaN(t.getTime()) || day(t) !== today) continue;
-    sum += num(r.usd) ?? 0;
-  }
-  return Math.round(sum * 1e6) / 1e6;
-}
-
-/** The list's spend footer, `$1.84 of $10`, and how much of the day's cap that is (0 to 1; a cap of 0 is full). */
+/** A spend footer, `$1.84 of $10`, and how much of the day's cap that is (0 to 1; a cap of 0 is full). */
 export function spendLine(spent: number, cap: number): { text: string; ratio: number } {
   const capText = Number.isInteger(cap) ? `$${cap}` : usdText(cap);
   return { text: `${usdText(spent)} of ${capText}`, ratio: cap > 0 ? Math.min(1, Math.max(0, spent / cap)) : 1 };

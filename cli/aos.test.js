@@ -701,6 +701,26 @@ test('upgrade re-vendors the runtime, migrates config, keeps memory', () => {
   assert.doesNotMatch(r.stdout, /Obsidian/, 'a vault with no Obsidian-era plugin folder hears nothing about it');
 });
 
+// remove-sessions D12: Sessions and Vault chat are gone, so their keys leave the vault's config on upgrade (else doctor
+// would warn about unknown keys on every upgraded vault); every other value the user set stays.
+test('D12: aos upgrade strips retired keys from brain/config.json and keeps user values', () => {
+  const sb = initialized();
+  const vaultCfg = path.join(sb.vault, 'brain', 'config.json');
+  fs.writeFileSync(vaultCfg, JSON.stringify({ sessions: { perDayUsd: 25, perTurnUsd: 2 }, ai: { chat: 'claude', ask: 'host' }, scan: { fileMapBudget: 7 } }));
+  const r = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /^ {3}removed retired keys: sessions, ai\.chat$/m);
+  const vc = readJson(vaultCfg);
+  assert.equal(vc.sessions, undefined);
+  assert.equal(vc.ai && vc.ai.chat, undefined);
+  assert.equal(vc.ai.ask, 'host', 'a user value is kept');
+  assert.equal(vc.scan.fileMapBudget, 7);
+  const row = require('./config-cmd.js').doctorRow({ configDir: sb.cfg, vault: sb.vault, env: {} });
+  assert.equal(row.ok, true, row.detail);
+  const again = aos(sb, ['upgrade', '--no-obsidian', '--from-local', ROOT]);
+  assert.doesNotMatch(again.stdout, /removed retired keys/, 'nothing to remove the second time');
+});
+
 // install-and-update I1/I2: the app's payload is a release tree that carries its runtime's dependencies. A copy of the
 // parts init and upgrade read, plus payload.json and a stand-in node_modules; its own cli/aos.js finds it as the repo.
 function releaseTree(sb, { deps = { 'fake-dep/index.js': 'module.exports = "from the payload";\n' }, manifest = { schema: 1, version: '9.9.9', runtimeDeps: true } } = {}) {
@@ -1571,8 +1591,8 @@ test('spendByFamily (spec 2026-09-24-settings-tab D7): today\'s USD per family, 
   fs.writeFileSync(path.join(vault, 'brain', '_index', 'provider-spend.jsonl'),
     row('session-summary', 0.01) + row('codex-extract', 0.02) + row('duty:monitor', 2) + row('reason:ask', 0.3) + row('routine:inbox', 0.4) +
     row('graph:semantic', 0.5) + row('cross-review:review', 1.25) + row('team:dev:builder', 0.75) + row('session:codex', 0.6) + row('session-summary', 9, '2020-01-01T00:00:00.000Z'));
-  assert.deepEqual(spendByFamily(vault), { hooks: 0.03, duties: 2, reasoner: 0.3, routines: 0.4, graph: 0.5, crossReview: 1.25, sessions: 0.6, teams: 0.75 }, 'session-summary is a hook; session:<host> is a session turn');
-  assert.deepEqual(spendByFamily(fs.mkdtempSync(path.join(os.tmpdir(), 'aos-spend-none-'))), { hooks: 0, duties: 0, reasoner: 0, routines: 0, graph: 0, crossReview: 0, sessions: 0, teams: 0 });
+  assert.deepEqual(spendByFamily(vault), { hooks: 0.03, duties: 2, reasoner: 0.3, routines: 0.4, graph: 0.5, crossReview: 1.25, teams: 0.75 }, 'session-summary is a hook; a retired Sessions turn (session:<host>) counts nowhere, the hook cap included (remove-sessions D12)');
+  assert.deepEqual(spendByFamily(fs.mkdtempSync(path.join(os.tmpdir(), 'aos-spend-none-'))), { hooks: 0, duties: 0, reasoner: 0, routines: 0, graph: 0, crossReview: 0, teams: 0 });
 });
 
 test('output larger than a pipe buffer arrives whole: `aos config list --json` read through a pipe parses', () => {

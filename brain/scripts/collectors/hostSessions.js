@@ -24,14 +24,13 @@
  *     byCwd (the call scan-vault.js and cli/workspace.js make today); anything else, or an options object in its place,
  *     collects afresh, as does a result collected for another vault than opts.vault.
  *       recent[]  { id, host, format, kind, title, titleSource, startedAt, lastAt, cwd (the start cwd), startExists, via,
- *                   resumable, reason, thread (a Sessions thread's id, via app only) }
- *                 kind ∈ interactive | headless | team | app; titleSource ∈ custom | ai | index | prompt | null
+ *                   resumable, reason }
+ *                 kind ∈ interactive | headless | team; titleSource ∈ custom | ai | index | prompt | null
  *       outside   { cwd, claude, codex, total, lastAt, exists, match (a workspace whose name is the folder's, compared as
  *                   slugs), git ({ root, branch } of its repository, never the vault's), worktrees (linked worktrees
  *                   folded into this row) }
  *
  * Attribution (D20), first match wins, recorded on each row as `via`:
- *   app       a Sessions thread: its host session id in brain/_index/sessions/<ws>/*.jsonl
  *   team      a team seat: its id in persona/teams/<team>/runs.jsonl, credited through its board item's `path`
  *   cwd       the start cwd inside a root (the folder, `repo:`, `aliases:`), the longest root winning
  *   worktree  the nearest .git file's `gitdir: <main>/.git/worktrees/<id>`, <main> inside a root; else, the folder
@@ -61,7 +60,6 @@ const RUNTIME_CWD_RE = /^[A-Z]--|^-(Users|home|var|tmp|opt|etc|root|mnt)-/;
 const SCHEMA = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HEAD_BYTES = 256 * 1024; // sessionHead's window: a file still smaller than this has its head read again as it grows
-const THREAD_HEAD_BYTES = 2 * 1024 * 1024; // a Sessions thread records its host session id in its first turn
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ITEM_SHAPE_RE = /^[^-].*-\d+$/; // a board item id as teams name them: <name>-NN
 const SUBAGENT_HOPS = 8; // how far a nested Codex subagent's parents are followed
@@ -122,19 +120,6 @@ function readSmall(file) {
     const n = fs.readSync(fd, buf, 0, SMALL_FILE_BYTES, 0);
     return buf.subarray(0, n).toString('utf8');
   } catch { return null; } finally { if (fd !== null) { try { fs.closeSync(fd); } catch { /* closed */ } } }
-}
-
-/** Up to `max` bytes of a file as whole lines (a cut last line is left out). */
-function headLines(file, max) {
-  let fd = null;
-  try {
-    fd = fs.openSync(file, 'r');
-    const buf = Buffer.alloc(max);
-    const n = fs.readSync(fd, buf, 0, max, 0);
-    const lines = buf.subarray(0, n).toString('utf8').split('\n');
-    if (n === max) lines.pop();
-    return lines;
-  } catch { return []; } finally { if (fd !== null) { try { fs.closeSync(fd); } catch { /* closed */ } } }
 }
 
 function readJsonl(file) {
@@ -260,31 +245,7 @@ function indexFile(f, old, { wantTouches }) {
   return { row, changed };
 }
 
-// ── what the vault records about sessions: Sessions threads (app) and team seats (team) ──
-
-/** host session id (lowercase) → { workspace, thread } from brain/_index/sessions/<ws>/<thread>.jsonl. */
-function appThreads(vault) {
-  const out = new Map();
-  if (!vault) return out;
-  const root = path.join(vault, 'brain', '_index', 'sessions');
-  for (const ws of listDir(root)) {
-    const dir = path.join(root, ws);
-    if (!isDir(dir)) continue;
-    for (const name of listDir(dir)) {
-      if (!name.endsWith('.jsonl')) continue;
-      let thread = name.slice(0, -'.jsonl'.length);
-      for (const line of headLines(path.join(dir, name), THREAD_HEAD_BYTES)) {
-        if (!line.includes('"meta"') && !line.includes('"session"')) continue;
-        let r;
-        try { r = JSON.parse(line); } catch { continue; }
-        if (!r || typeof r !== 'object') continue;
-        if (r.kind === 'meta' && str(r.thread)) thread = r.thread;
-        else if (r.kind === 'session' && str(r.id) && !out.has(r.id.toLowerCase())) out.set(r.id.toLowerCase(), { workspace: ws, thread });
-      }
-    }
-  }
-  return out;
-}
+// ── what the vault records about sessions: team seats (team) ──
 
 /** Every team's board (item id → its latest row) and the seat sessions its runs.jsonl names (D34: both providers). */
 function teamRecords(vault) {
@@ -355,7 +316,6 @@ function collectHostSessions(opts = {}) {
   }
   if (dirty && indexPath) writeCache(indexPath, files);
 
-  const app = appThreads(vault);
   const teams = teamRecords(vault);
   const byKey = new Map();
   const keyless = [];
@@ -368,7 +328,7 @@ function collectHostSessions(opts = {}) {
       file: f.file, host: f.host, format: row.format, id: headId || f.id, headId, fileId: f.id, archived: !!f.archived,
       kind: head.kind || 'interactive', startedAt: head.startedAt || null, lastAt: row.lastAt || iso(f.mtimeMs),
       startCwd: str(head.startCwd) || slugCwd(f), title: row.title || null, titleSource: row.title ? row.titleSource : null,
-      touches: row.touches || null, app: null, team: null,
+      touches: row.touches || null, team: null,
     };
     if (rec.kind === 'subagent') { subagents.push({ rec, parentId: str(head.parentId) }); continue; }
     if (!rec.title && rec.host === 'codex' && codexIndex && rec.id && codexIndex[rec.id]) {
@@ -391,7 +351,6 @@ function collectHostSessions(opts = {}) {
   const sessions = [...byKey.values(), ...keyless];
   for (const rec of sessions) {
     const key = rec.id ? rec.id.toLowerCase() : null;
-    rec.app = key ? app.get(key) || null : null;
     rec.team = key ? teams.seats.get(key) || null : null;
   }
   // A Codex thread_spawn subagent is part of its parent's work: its time and touches fold into the thread at the top
@@ -516,9 +475,6 @@ function attachSessions(workspaces, collected, opts = {}) {
       if (d === path.dirname(d)) return null;
     }
   };
-  const byName = new Map();
-  for (const ws of list) if (typeof ws.name === 'string' && !byName.has(ws.name)) byName.set(ws.name, ws);
-  for (const ws of list) if (ws.archived && typeof ws.label === 'string' && !byName.has(ws.label)) byName.set(ws.label, ws);
   // Names for the vanished-worktree rule: each workspace's name (an archived one's label) and its aliases' folder names.
   const names = [];
   for (const ws of list) {
@@ -613,10 +569,6 @@ function attachSessions(workspaces, collected, opts = {}) {
 
   /** D20's order. → { ws, via } or null */
   const attribute = (s) => {
-    if (s.app) {
-      const ws = byName.get(s.app.workspace);
-      if (ws) return { ws, via: 'app' };
-    }
     if (s.team) {
       const ws = itemTarget(s.team);
       if (ws) return { ws, via: 'team' };
@@ -644,8 +596,7 @@ function attachSessions(workspaces, collected, opts = {}) {
   const recentRow = ({ s, via }) => {
     const cwd = abs(s.startCwd) || s.startCwd || null;
     const seat = !!abs(cwd) && insideAny(abs(cwd), worktreesRoots);
-    // A session the old Sessions tab ran is the headless host session it was (remove-sessions D5): `via` and `thread` stay
-    // until the attribution goes.
+    // A session the old Sessions tab ran is the headless host session it was, credited like any other (remove-sessions D5).
     const kind = s.team || seat ? 'team' : s.kind;
     let reason = null;
     if (kind === 'team') reason = REASONS.team;
@@ -659,7 +610,6 @@ function attachSessions(workspaces, collected, opts = {}) {
       id: s.id, host: s.host, format: s.format, kind, title: s.title, titleSource: s.titleSource,
       startedAt: s.startedAt, lastAt: s.lastAt, cwd, startExists: exists(abs(cwd)), via, resumable: !reason, reason,
     };
-    if (via === 'app') row.thread = s.app.thread;
     return row;
   };
   for (const ws of list) {

@@ -7,7 +7,6 @@
  *   routineSpendToday       the prompt routines' share of today (feature routine:*), for routines.perDayUsd
  *   graphSpendToday         the vault graph's semantic pass (feature graph:*), for graph.semantic.perDayUsd
  *   crossReviewSpendToday   cross-review and handoff calls (feature cross-review:*), for crossReview.perDayUsd
- *   sessionSpendToday       the turns of app sessions (feature session:*), for sessions.perDayUsd
  * Lives apart from provider.js so claude-cli.js can ledger without a require cycle.
  */
 const fs = require('fs');
@@ -56,15 +55,15 @@ function recordSpend({ feature, provider, model, usd, inputTokens, outputTokens,
   return row;
 }
 
-/** The metered families that never count against the hook cap: five carry their own daily cap, and agent teams
- *  (`team:`) are capped per board item instead (spec 2026-09-28-agent-teams D8). */
+/** The metered families that never count against the hook cap: four carry their own daily cap, agent teams (`team:`)
+ *  are capped per board item instead (spec 2026-09-28-agent-teams D8), and `session:` rows are the retired Sessions tab's
+ *  turns (remove-sessions D12), which a ledger may still hold. */
 const HOOK_EXCLUDE = /^(duty|reason|routine|graph|cross-review|team|session):/;
 const REASON_ROWS = /^reason:/;
 const ROUTINE_ROWS = /^routine:/;
 const GRAPH_ROWS = /^graph:/;
 const CROSS_REVIEW_ROWS = /^cross-review:/;
 const TEAM_ROWS = /^team:/;
-const SESSION_ROWS = /^session:/;
 
 /**
  * USD spent on the local calendar day of `now` (default: now) by the rows the hook cap
@@ -112,9 +111,4 @@ function crossReviewSpendToday(now = new Date()) {
   return spendToday(now, { include: CROSS_REVIEW_ROWS, exclude: null });
 }
 
-/** Today's session spend: the rows `sessions.perDayUsd` governs (spec 2026-10-07-unidex-sessions S6). */
-function sessionSpendToday(now = new Date()) {
-  return spendToday(now, { include: SESSION_ROWS, exclude: null });
-}
-
-module.exports = { ProviderUnavailable, recordSpend, spendToday, reasonSpendToday, routineSpendToday, graphSpendToday, crossReviewSpendToday, sessionSpendToday, SPEND_PATH, HOOK_EXCLUDE, REASON_ROWS, ROUTINE_ROWS, GRAPH_ROWS, CROSS_REVIEW_ROWS, TEAM_ROWS, SESSION_ROWS };
+module.exports = { ProviderUnavailable, recordSpend, spendToday, reasonSpendToday, routineSpendToday, graphSpendToday, crossReviewSpendToday, SPEND_PATH, HOOK_EXCLUDE, REASON_ROWS, ROUTINE_ROWS, GRAPH_ROWS, CROSS_REVIEW_ROWS, TEAM_ROWS };
