@@ -86,7 +86,7 @@ const SETTINGS = [
   { key: 'codex.effort', section: 'provider', label: 'Codex effort', type: 'enum', host: 'codex', values: CODEX_EFFORTS, applies: 'next-call',
     help: 'Reasoning effort for background Codex calls.' },
   { key: 'reasoner.model', section: 'provider', label: 'Reasoner model', type: 'model', host: 'claude', applies: 'next-call',
-    help: 'Claude model the Chat tab and other reasoning calls use.' },
+    help: 'Claude model the reasoning calls use (/ask-brain --local, /reflect-week --local, /consolidate-memory --local).' },
   { key: 'reasoner.codexModel', section: 'provider', label: 'Reasoner model on Codex', type: 'model', host: 'codex', nullable: true, applies: 'next-call',
     help: 'Codex model for the reasoner when Codex answers it; null falls back to codex.model.' },
   { key: 'reasoner.effort', section: 'provider', label: 'Reasoner effort', type: 'enum', values: REASONER_EFFORTS, applies: 'next-call',
@@ -288,7 +288,7 @@ const SETTINGS = [
 
   // ── Computer pane (agent-computer D25) ──────────────────────────────────
   { key: 'computer.enabled', section: 'computer', label: 'Computer pane', type: 'bool', applies: 'next-call',
-    help: 'The in-app browser agents can drive beside Code terminals and Sessions chats (the Code and Chat pages). Off, its agents\' computer tools say the pane is off.' },
+    help: 'The in-app browser agents can drive beside Code terminals. Off, its agents\' computer tools say the pane is off.' },
   { key: 'computer.askTimeoutSec', section: 'computer', label: 'Ask timeout', type: 'number', int: true, min: 30, applies: 'next-call',
     help: 'Seconds an ask waits before it counts as Deny.' },
   { key: 'computer.awake', section: 'computer', label: 'Browsers kept awake', type: 'number', int: true, min: 1, max: 12, applies: 'next-call',

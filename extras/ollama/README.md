@@ -18,8 +18,8 @@ Ollama directly and does not consult the provider setting.
 Models: under provider `local` (a new install's default) the workhorse follows the Mac's memory, `qwen3.5:4b` under
 12 GB, else `qwen3.5:9b` (`local.model` names another), with `qwen3-embedding:0.6b` as the embedder; `aos local pull`
 downloads them. `model-pull.sh` pulls the two default tags, `qwen3.5:9b` and `qwen3-embedding:0.6b` (override with
-`BRAIN_MODEL` and `BRAIN_EMBEDDER`). The reasoner role (`/ask-brain --local`, `/reflect-week`, `/consolidate-memory`,
-Vault chat) is a hosted model, not one of these tags, except under provider `local`, where each follows its `ai.*`
+`BRAIN_MODEL` and `BRAIN_EMBEDDER`). The reasoner role (`/ask-brain --local`, `/reflect-week`,
+`/consolidate-memory`) is a hosted model, not one of these tags, except under provider `local`, where each follows its `ai.*`
 switch and runs on the local model by default.
 It runs on Claude (`reasoner.model`, default `claude-opus-5`) through your Claude Code login, or
 on Codex (`reasoner.codexModel`) when Codex is a host and logged in; Claude comes first unless

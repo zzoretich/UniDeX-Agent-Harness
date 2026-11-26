@@ -38,7 +38,7 @@ counts (`brain/scripts/sdk/lib/codex-pricing.js`). Each family has its daily cap
   duty.
 - **The Go-local card** (the 2.0 update's question, and Settings ▸ Local engine ▸ Go local…) shows what background
   work spent in the last 7 days, from this ledger: hosted rows only, without the work that stays hosted (duties,
-  prompt routines, Sessions, cross-review, teams).
+  prompt routines, Code's agents, cross-review, teams).
 
 ## Enable / disable
 

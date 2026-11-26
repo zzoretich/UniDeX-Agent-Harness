@@ -416,7 +416,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     el.createEl("p", {
       cls: "aos-setup-hint",
       text: noHost
-        ? `Neither Claude Code nor Codex is installed and logged in. You can install without one: your vault, its memory and the background work on this Mac are set up now; Sessions and the Chief of Staff wait until Claude Code or Codex is added.`
+        ? `Neither Claude Code nor Codex is installed and logged in. You can install without one: your vault, its memory and the background work on this Mac are set up now; Code's agents and the Chief of Staff wait until Claude Code or Codex is added.`
         : `${BRAND.name} works with Claude Code, Codex, or both. Only the ones that are installed and logged in can be chosen.`,
     });
     const hosts = el.createDiv({ cls: "aos-setup-hosts" });
@@ -439,7 +439,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     const spLink = el.createEl("a", { text: "About Superpowers", attr: { href: "https://github.com/obra/superpowers", target: "_blank", rel: "noopener noreferrer" } });
     spLink.addClass("aos-setup-hint");
     el.createEl("p", { cls: "aos-setup-hint", text: "Installs the official Superpowers plugin on each selected host. Needs network and host sign-in. Existing disabled installs stay disabled. Its optional visual companion can load a remote logo if you later enable that upstream feature; UniDeX does not enable it." });
-    if (s.host === "none") el.createEl("p", { cls: "aos-setup-hint", attr: { "data-hint": "no-host" }, text: "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Finish says how." });
+    if (s.host === "none") el.createEl("p", { cls: "aos-setup-hint", attr: { "data-hint": "no-host" }, text: "Code's agents and the Chief of Staff wait until Claude Code or Codex is added. Finish says how." });
     const dropped = droppedHosts(s.host, s.report?.wired);
     if (dropped.length) renderWired(el, dropped, ready);
     el.createEl("h3", { text: "Vault folder" });
@@ -710,7 +710,7 @@ export function runSetup(root: HTMLElement, aos: AosBridge, info: BootInfo): voi
     }
     if (s.host === "none") {
       leftItem(el, "no-host", "Add Claude Code or Codex",
-        "Sessions and the Chief of Staff wait until Claude Code or Codex is added. Your vault, its memory and the background work on this Mac run without one.",
+        "Code's agents and the Chief of Staff wait until Claude Code or Codex is added. Your vault, its memory and the background work on this Mac run without one.",
         [TERMINAL,
           `Install one and sign in: Claude Code with ${INSTALL_COMMAND.claude}, then ${LOGIN_COMMAND.claude}; or Codex with ${INSTALL_COMMAND.codex}, then ${LOGIN_COMMAND.codex}.`,
           `Type ${addHostCommand(aosCmd)} (or ${addHostCommand(aosCmd, "codex")}) and press Return, or Add it under Settings ▸ Hosts in the Workbench. It wires the host into this vault and keeps your files.`]);
