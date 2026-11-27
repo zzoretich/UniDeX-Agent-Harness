@@ -5,7 +5,7 @@ import {
   sanitizeSessionChoice, rememberSessionChoice,
   sanitizeTerminalChoice, rememberTerminalChoice, TERM_RECENT_MAX,
   sanitizeAgentWorkspace, sanitizeFilesChoice, rememberFilesChoice, FILES_FAVORITES_MAX, FILES_RECENTS_MAX,
-  sanitizeComputerPane, paneMax, paneSizeWidth, paneSizeOf, computerPaneStart, rememberComputerPane, COMPUTER_PANE_NARROW,
+  sanitizeComputerPane, paneMax, paneSizeWidth, paneSizeOf, computerPaneStart, rememberComputerPane, prunedComputerPane, COMPUTER_PANE_NARROW,
 } from "./settingsDefaults";
 
 test("the contract §5 settings exist with their defaults", () => {
@@ -193,6 +193,15 @@ test("the Computer pane is 440 px wide and open until it is changed; junk reads 
 test("remove-sessions D8: a stored computerPane.chat (Sessions' pane) is dropped, and Code's is kept", () => {
   assert.deepEqual(sanitizeComputerPane({ code: { width: 500, collapsed: true }, chat: { width: 610, collapsed: false } }), { code: { width: 500, collapsed: true } });
   assert.deepEqual(rememberComputerPane({ chat: { width: 610, collapsed: true } }, "code", { width: 600, collapsed: false }), { code: { width: 600, collapsed: false } }, "saving Code's pane writes no chat page back");
+});
+
+test("remove-sessions D8: prunedComputerPane is what loadSettings saves once when data.json still holds the chat page", () => {
+  assert.deepEqual(prunedComputerPane({ code: { width: 500, collapsed: true }, chat: { width: 610, collapsed: false } }), { code: { width: 500, collapsed: true } });
+  assert.deepEqual(prunedComputerPane({ chat: { width: 610, collapsed: true } }), {}, "Code's pane never changed stays never changed");
+  // Nothing to prune: no save on load.
+  for (const raw of [undefined, null, 7, "x", [], {}, { code: { width: 500, collapsed: false } }, { code: "wide" }]) {
+    assert.equal(prunedComputerPane(raw), null, JSON.stringify(raw) ?? String(raw));
+  }
 });
 
 test("sanitizeComputerPane keeps a width from 320 up in whole pixels and a real boolean, and drops the rest", () => {

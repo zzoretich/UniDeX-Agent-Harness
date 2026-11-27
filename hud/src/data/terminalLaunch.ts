@@ -214,9 +214,9 @@ export function placeOf(dir: string, w: PlaceWorld): Place {
 }
 
 /**
- * The computer a place shares (agent-computer D30, D3): `ws:<name>` for a workspace (Scratch too), which a Chat thread
- * in that workspace shares; `vault`, `home`, and `dir:<absolute folder>` for any other folder. The prefixes keep a
- * workspace named "vault" or "home" apart from those places.
+ * The computer a place shares (agent-computer D30, D3): `ws:<name>` for a workspace (Scratch too); `vault`, `home`, and
+ * `dir:<absolute folder>` for any other folder. The prefixes keep a workspace named "vault" or "home" apart from those
+ * places.
  */
 export function placeKey(p: Place): string {
   if ((p.kind === "workspace" || p.kind === "scratch") && p.workspace) return `ws:${p.workspace}`;
@@ -380,9 +380,9 @@ const CLAUDE_ACCESS: Record<TermAccess, string[]> = {
 
 /**
  * The one `--allowedTools` value of a Claude Code launch (agent-computer D33: the app's ask gate is the computer tools'
- * only gate, as lib/headless.js sessionAllowedTools does it for a Chat turn): Read only pre-approves the five look tools,
- * Edit files and Host default all thirteen, Edit and run commands Bash and all thirteen. Codex launches carry nothing: its
- * approvals ship in the registration (cli/codex-host.js), since a `-c mcp_servers…` override breaks a plugin-mode session.
+ * only gate): Read only pre-approves the five look tools, Edit files and Host default all thirteen, Edit and run commands
+ * Bash and all thirteen. Codex launches carry nothing: its approvals ship in the registration (cli/codex-host.js), since a
+ * `-c mcp_servers…` override breaks a plugin-mode session.
  */
 function claudeAllowedTools(access: TermAccess): string {
   const tools = (access === "read" ? COMPUTER_LOOK : COMPUTER_TOOLS).map((t) => CLAUDE_PLUGIN_TOOL + t);

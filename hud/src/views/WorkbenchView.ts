@@ -578,7 +578,7 @@ export class WorkbenchView extends ItemView {
     if (target.node) reveal.node = target.node;
     // Agent Workspace hears every link, a bare one too: with a gate pending, a link that names no node shows Needs you
     // where a rail click shows the saved node (agent-workspace D5). Code does too: a link to Code shows its terminals,
-    // so History over the stage gives way (remove-sessions D3); a rail click leaves it.
+    // so History over the stage gives way (remove-sessions D3), as a rail click does (it mounts Code afresh).
     if (Object.keys(reveal).length || tab === "agent-teams" || tab === "term") revealOf(this.tabs[tab])?.(reveal);
     return true;
   }

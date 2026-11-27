@@ -2,13 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ALIAS_REASON, aliasCatalog,
-  ACCESS_LEVELS, CODEX_ACCESS_NOTE, DEFAULT_ACCESS, EFFORT_TITLE, SESSION_EFFORTS, VAULT_EFFORTS, accessHostLine, accessLabel,
-  catalogHost, catalogSource, chipText, choiceText, commandQuery, commandTyping, countsText, defaultChoice, diffTotals,
+  ACCESS_LEVELS, EFFORT_TITLE, SESSION_EFFORTS, accessLabel,
+  catalogHost, catalogSource, choiceText, commandQuery, countsText, defaultChoice, diffTotals,
   doneFooter, doneLine, durationText, effortLabel, effortsFor, fileCounts, fileStatusLabel, filterCommands, findModel,
-  hostChoices, isAccess, lastTurnUsd, mergeEvents, modelArg, modelName, relPath, searchModels, spendLine, splitModels, statusSummary,
+  hostChoices, isAccess, modelArg, modelName, relPath, searchModels, spendLine, splitModels,
   catalogModelId, sameModel, transcriptModelName,
-  threadRows, timelineRows, toolCallLine, toolLine, toolResultText, turnChoices, turnElapsed, turnOpen, usdText,
-  workingText, workspaceNames, type CatalogCommand, type ThreadRow, type ToolCall,
+  threadRows, toolCallLine, toolResultText, turnOpen, usdText,
+  workspaceNames, type CatalogCommand, type ThreadRow, type ToolCall,
 } from "./agentSessions";
 import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionEvent } from "../host";
 
@@ -26,14 +26,8 @@ test("usdText: two places, four under a cent", () => {
   assert.equal(usdText(1.5), "$1.50");
 });
 
-test("toolLine: kind · name · file, with the parts that are missing left out", () => {
-  assert.equal(toolLine({ toolKind: "edit", name: "Edit", filePath: "src/a.js", summary: "" }), "edit · Edit · src/a.js");
-  assert.equal(toolLine({ toolKind: "bash", name: "shell", filePath: null, summary: "npm test" }), "bash · shell");
-  assert.equal(toolLine({ toolKind: "", name: "Task", filePath: null, summary: "" }), "other · Task");
-});
-
-test("timelineRows: prompts, text, a tool with its result folded in, files, errors, and a footer per turn; the session id is left out", () => {
-  const rows = timelineRows([
+test("threadRows: prompts, text, a tool with its result folded in, files, errors, and a footer per turn; the session id is left out", () => {
+  const rows = threadRows([
     ev("prompt", 1, { text: "fix the parser" }),
     ev("session", 1, { id: "abc" }),
     ev("text", 1, { text: "Fixed." }),
@@ -61,8 +55,8 @@ test("timelineRows: prompts, text, a tool with its result folded in, files, erro
   assert.deepEqual(patch && patch.kind === "patch" && patch.files, [{ path: "src/b.js", change: "add" }]);
 });
 
-test("timelineRows: a tool still waiting has no result; a result of an unknown tool is dropped", () => {
-  const rows = timelineRows([ev("prompt", 1, { text: "x" }), ev("tool", 1, { id: "t1", name: "Read", toolKind: "read" }), ev("tool_result", 1, { id: "nope", ok: true })]);
+test("threadRows: a tool still waiting has no result; a result of an unknown tool is dropped", () => {
+  const rows = threadRows([ev("prompt", 1, { text: "x" }), ev("tool", 1, { id: "t1", name: "Read", toolKind: "read" }), ev("tool_result", 1, { id: "nope", ok: true })]);
   assert.deepEqual(rows.map((r) => r.kind), ["prompt", "tool"]);
   assert.equal(rows[1].kind === "tool" && rows[1].result, null);
 });
@@ -80,22 +74,8 @@ test("turnOpen: a prompt with no done after it", () => {
   assert.equal(turnOpen([ev("prompt", 1), ev("done", 1), ev("prompt", 2)]), true);
 });
 
-test("mergeEvents: the read and the live events overlap; each record appears once, in order", () => {
-  const a = ev("prompt", 1, { text: "x" });
-  const b = ev("text", 1, { text: "y" });
-  const c = ev("done", 1, { ok: true });
-  assert.deepEqual(mergeEvents([a, b], [b, c]), [a, b, c]);
-  assert.deepEqual(mergeEvents([], [a, a]), [a]);
-});
-
-test("fileStatusLabel and statusSummary: the card's words for git's codes", () => {
+test("fileStatusLabel: git's codes in words", () => {
   assert.deepEqual(["??", ".M", "M.", "A.", ".D", "R.", "UU", "AA"].map(fileStatusLabel), ["new", "modified", "modified", "added", "deleted", "renamed", "conflict", "conflict"]);
-  const st = { repo: true, branch: "main", detached: false, merging: false, files: [] as HostGitStatus["files"] };
-  const f = (path: string, status: string) => ({ path, status, added: null, removed: null });
-  assert.equal(statusSummary(st), "No changes");
-  assert.equal(statusSummary({ ...st, files: [f("a", "??")] }), "1 file changed");
-  assert.equal(statusSummary({ ...st, files: [f("a", "??"), f("b", ".M")] }), "2 files changed");
-  assert.equal(statusSummary({ ...st, repo: false }), "Not a git repository");
 });
 
 test("hostChoices: both hosts in order; one that is off or not logged in is offered disabled, with why", () => {
@@ -176,12 +156,11 @@ test("sameModel (M4): a pick that runs what the conversation runs already restar
   assert.equal(sameModel("codex", codexCat, null, "gpt-6-sol"), false);
 });
 
-test("effortLabel and the effort lists: every level in words; Vault's levels are the one-shot paths'", () => {
+test("effortLabel and the effort lists: every level in words", () => {
   assert.deepEqual(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map(effortLabel), ["Minimal", "Low", "Medium", "High", "XHigh", "Max", "Ultra"]);
   assert.equal(effortLabel("turbo"), "Turbo");
   assert.equal(effortLabel(""), "");
   assert.deepEqual(SESSION_EFFORTS.claude, E5);
-  assert.deepEqual(VAULT_EFFORTS.codex, ["minimal", "low", "medium", "high", "xhigh"]);
   assert.deepEqual(EFFORT_TITLE, { claude: "Effort", codex: "Reasoning" });
 });
 
@@ -216,7 +195,7 @@ test("modelName: a listed model by name (without '(recommended)'); no model or C
   assert.equal(modelName("codex", codexCat, "default"), "default");
 });
 
-test("effortsFor: the model's own levels; none for a model without efforts; a custom id gets the host's; Vault keeps only its path's", () => {
+test("effortsFor: the model's own levels; none for a model without efforts; a custom id gets the host's", () => {
   assert.deepEqual(effortsFor("claude", claudeCat, "opus"), E5);
   assert.deepEqual(effortsFor("claude", claudeCat, "claude-opus-4-6"), ["low", "medium", "high", "max"]);
   assert.deepEqual(effortsFor("claude", claudeCat, "claude-haiku-4-5-20251001"), []);
@@ -226,12 +205,6 @@ test("effortsFor: the model's own levels; none for a model without efforts; a cu
   assert.deepEqual(effortsFor("codex", codexCat, "gpt-6-astra"), E6);
   assert.deepEqual(effortsFor("codex", codexCat, null), ["minimal", ...E6], "no model is Codex's configured default");
   assert.deepEqual(effortsFor("codex", codexDown, null), SESSION_EFFORTS.codex);
-  // Vault: Claude's five all pass; Codex drops max and ultra.
-  assert.deepEqual(effortsFor("claude", claudeCat, "opus", true), E5);
-  assert.deepEqual(effortsFor("codex", codexCat, "gpt-6-astra", true), ["low", "medium", "high", "xhigh"]);
-  assert.deepEqual(effortsFor("codex", codexCat, "gpt-5.6-terra", true), ["high"]);
-  assert.deepEqual(effortsFor("codex", codexDown, "anything", true), VAULT_EFFORTS.codex);
-  assert.deepEqual(effortsFor("claude", claudeCat, "claude-haiku-4-5-20251001", true), []);
   // The catalog's list is never handed out to be changed.
   effortsFor("claude", claudeCat, "opus").push("x");
   assert.deepEqual(claudeCat.models[1].efforts, E5);
@@ -256,8 +229,6 @@ test("defaultChoice on Codex: remembered, else the configured default, else the 
   // A Codex that listed nothing runs its own default.
   assert.deepEqual(defaultChoice("codex", codexDown, null), { model: null, effort: "medium" });
   assert.deepEqual(defaultChoice("codex", null, null), { model: null, effort: "medium" });
-  // Vault: a remembered ultra is not a level ask.js takes.
-  assert.deepEqual(defaultChoice("codex", codexCat, { model: "gpt-6-astra", effort: "ultra" }, true), { model: "gpt-6-astra", effort: "high" });
 });
 
 test("modelArg: Claude's default alias and no choice pass no --model", () => {
@@ -268,15 +239,14 @@ test("modelArg: Claude's default alias and no choice pass no --model", () => {
   assert.equal(modelArg("codex", null), null);
 });
 
-test("chipText and choiceText: host · model · effort, with no effort part when the model takes none", () => {
-  assert.equal(chipText("claude", claudeCat, "opus", "high"), "Claude Code · Opus 5.5 · High");
-  assert.equal(chipText("claude", claudeCat, "default", "medium"), "Claude Code · Default · Medium");
-  assert.equal(chipText("claude", claudeCat, "claude-haiku-4-5-20251001", "high"), "Claude Code · Haiku 4.5");
-  assert.equal(chipText("claude", claudeCat, "opus", null), "Claude Code · Opus 5.5");
-  assert.equal(chipText("codex", codexCat, "gpt-6-astra", "xhigh"), "Codex · GPT-6-Astra · XHigh");
-  assert.equal(chipText("codex", codexDown, null, "medium"), "Codex · Codex default · Medium");
+test("choiceText: model · effort, with no effort part when the model takes none", () => {
+  assert.equal(choiceText("claude", claudeCat, "opus", "high"), "Opus 5.5 · High");
+  assert.equal(choiceText("claude", claudeCat, "default", "medium"), "Default · Medium");
+  assert.equal(choiceText("claude", claudeCat, "claude-haiku-4-5-20251001", "high"), "Haiku 4.5");
+  assert.equal(choiceText("claude", claudeCat, "opus", null), "Opus 5.5");
+  assert.equal(choiceText("codex", codexCat, "gpt-6-astra", "xhigh"), "GPT-6-Astra · XHigh");
+  assert.equal(choiceText("codex", codexDown, null, "medium"), "Codex default · Medium");
   assert.equal(choiceText("codex", codexCat, "gpt-6-astra", "max"), "GPT-6-Astra · Max");
-  assert.equal(choiceText("codex", codexCat, "gpt-6-astra", "max", true), "GPT-6-Astra", "Vault does not take max on Codex");
 });
 
 test("searchModels: by name, id or description, ignoring case; an empty query keeps them all", () => {
@@ -300,18 +270,9 @@ test("catalogSource: the host's version and the list's age, or why the list is s
 
 // ── access levels ──
 
-test("access levels: three, in order, with their words, descriptions and each host's mapping", () => {
+test("access levels: three, in order, with their words and descriptions", () => {
   assert.deepEqual(ACCESS_LEVELS.map((l) => [l.id, l.label]), [["read", "Read only"], ["edit", "Edit files"], ["run", "Edit and run commands"]]);
-  assert.equal(DEFAULT_ACCESS, "edit");
   assert.ok(ACCESS_LEVELS.every((l) => l.description.endsWith(".") && !l.description.includes("!")));
-  assert.deepEqual(ACCESS_LEVELS.map((l) => accessHostLine(l)), [
-    "Claude: plan mode · Codex: read-only sandbox",
-    "Claude: acceptEdits · Codex: workspace-write",
-    "Claude: acceptEdits + Bash · Codex: same as Edit files",
-  ]);
-  assert.equal(accessHostLine(ACCESS_LEVELS[2], "codex"), "Codex: same as Edit files");
-  assert.equal(accessHostLine(ACCESS_LEVELS[0], "claude"), "Claude: plan mode");
-  assert.equal(CODEX_ACCESS_NOTE, "Codex runs commands inside its sandbox at every level that edits, with no network.");
   assert.deepEqual(["read", "edit", "run"].map((a) => accessLabel(a as "read")), ["Read only", "Edit files", "Edit and run commands"]);
   assert.deepEqual(["read", "run", "write", null, undefined, 1].map(isAccess), [true, true, false, false, false, false]);
 });
@@ -320,7 +281,7 @@ test("access levels: three, in order, with their words, descriptions and each ho
 
 const cmd = (name: string, description = "", prefix = "/"): CatalogCommand => ({ name, insert: `${prefix}${name} `, description, hint: null });
 
-test("commandQuery and commandTyping: a leading / (or $ on Codex) and no whitespace yet", () => {
+test("commandQuery: a leading / (or $ on Codex) and no whitespace yet", () => {
   assert.equal(commandQuery("/", "claude"), "");
   assert.equal(commandQuery("/rev", "claude"), "rev");
   assert.equal(commandQuery("/agenticos:rec", "claude"), "agenticos:rec");
@@ -332,9 +293,8 @@ test("commandQuery and commandTyping: a leading / (or $ on Codex) and no whitesp
   assert.equal(commandQuery("/rev", "codex"), "rev");
   assert.equal(commandQuery("fix /this", "claude"), null);
   assert.equal(commandQuery("", "codex"), null);
-  assert.equal(commandTyping("/", "claude"), true);
-  assert.equal(commandTyping("$x y", "codex"), false);
-  assert.equal(commandTyping(" /x", "claude"), false);
+  assert.equal(commandQuery("$x y", "codex"), null);
+  assert.equal(commandQuery(" /x", "claude"), null);
 });
 
 test("filterCommands: name prefix first, then a part's prefix, then the name or the description; capped, with the total", () => {
@@ -417,7 +377,7 @@ test("toolResultText: nothing while running; a failure's words; an edit's +/− 
   assert.equal(toolResultText(row(tool("shell", "bash"), { ok: true, summary: "x".repeat(300) }))?.length, 120);
 });
 
-test("threadRows: tool rows carry their verb and target; a turn's footer its length; timelineRows keeps the first shapes", () => {
+test("threadRows: tool rows carry their verb and target; a turn's footer its length", () => {
   const events = [
     ev("prompt", 1, { text: "fix it", t: "2026-10-07T10:00:00.000Z" }),
     ev("tool", 1, { id: "t1", name: "Read", toolKind: "read", summary: "", filePath: `${ROOT}/src/a.ts`, t: "2026-10-07T10:00:05.000Z" }),
@@ -433,7 +393,6 @@ test("threadRows: tool rows carry their verb and target; a turn's footer its len
   assert.ok(done.kind === "done");
   assert.equal(done.ms, 134000);
   assert.equal(durationText(done.ms ?? 0), "2m 14s");
-  assert.deepEqual(timelineRows(events).map((r) => r.kind), ["prompt", "tool", "done"]);
 });
 
 test("threadRows: only the latest plan of a turn, where its first plan was; each turn its own", () => {
@@ -488,18 +447,8 @@ test("threadRows: prompts of an older thread record no choices, and no marker co
   assert.deepEqual(d.flatMap((r) => (r.kind === "change" ? [r.text] : [])), ["Next turn on Default"]);
 });
 
-test("turnElapsed, durationText and workingText: the working line's clock", () => {
-  const at = (s: number) => new Date(Date.parse("2026-10-07T10:00:00.000Z") + s * 1000).toISOString();
-  const running = [ev("prompt", 1, { t: at(0) }), ev("done", 1, { t: at(30) }), ev("prompt", 2, { t: at(60) }), ev("text", 2, { t: at(70) })];
-  assert.equal(turnElapsed(running, new Date(at(108))), 48000);
-  assert.equal(turnElapsed(running.slice(0, 2), new Date(at(500))), 30000, "a finished turn stops at its done");
-  assert.equal(turnElapsed([], NOW), null);
-  assert.equal(turnElapsed([ev("prompt", 1, { t: "not a time" })], NOW), null);
-  assert.equal(turnElapsed([ev("prompt", 1, { t: at(10) })], new Date(at(0))), 0, "a clock behind the prompt is no time");
+test("durationText: seconds, then minutes and seconds, then hours and minutes", () => {
   assert.deepEqual([0, 999, 48000, 134000, 3600000, 3900000].map(durationText), ["0s", "0s", "48s", "2m 14s", "1h 0m", "1h 5m"]);
-  assert.equal(workingText(48000), "Working… (48s · esc to stop)");
-  assert.equal(workingText(null), "Working… (esc to stop)");
-  assert.equal(workingText(48000, true), "Stopping…");
 });
 
 // ── the repository and the list ──
@@ -522,25 +471,11 @@ test("diffTotals, countsText and fileCounts: +/− across files, a binary file c
   assert.equal(fileCounts(null, "src/a.ts"), null);
 });
 
-test("turnChoices and doneLine: a finished turn names its model, effort, length and cost", () => {
-  const events = [
-    ev("prompt", 1, { text: "a", model: "opus", effort: "high", access: "edit" }),
-    ev("prompt", 1, { text: "again", model: "haiku" }),
-    ev("prompt", 2, { text: "old" }),
-    ev("prompt", 3, { text: "c", model: null, effort: null }),
-  ];
-  assert.deepEqual([...turnChoices(events)], [[1, { model: "opus", effort: "high" }], [3, { model: null, effort: null }]]);
+test("doneLine: a finished turn names its model, effort, length and cost", () => {
   const done = { kind: "done" as const, turn: 1, ok: true, footer: "$0.18 estimated · 1,200 in · 80 out", ms: 134000 };
   assert.equal(doneLine(done, "Opus 5.5 · High"), "Done · Opus 5.5 · High · 2m 14s · $0.18 estimated · 1,200 in · 80 out");
   assert.equal(doneLine({ ...done, ms: null }), "Done · $0.18 estimated · 1,200 in · 80 out");
   assert.equal(doneLine({ ...done, ok: false, footer: "did not finish · no cost recorded", ms: 4000 }, null), "Did not finish · 4s · no cost recorded");
-});
-
-test("lastTurnUsd: the last done's spend, else its usage's; null before a turn ends or without a cost", () => {
-  assert.equal(lastTurnUsd([ev("prompt", 1)]), null);
-  assert.deepEqual(lastTurnUsd([ev("done", 1, { ok: true, usd: 0.1 }), ev("prompt", 2), ev("usage", 2, { usd: 0.42 }), ev("done", 2, { ok: true, estimated: true })]), { usd: 0.42, estimated: true });
-  assert.deepEqual(lastTurnUsd([ev("done", 1, { ok: true, usd: 0.1 }), ev("prompt", 2)]), { usd: 0.1, estimated: false });
-  assert.equal(lastTurnUsd([ev("done", 1, { ok: false })]), null);
 });
 
 test("spendLine: the spend against the cap", () => {
@@ -550,7 +485,7 @@ test("spendLine: the spend against the cap", () => {
   assert.equal(spendLine(0, 0).ratio, 1);
 });
 
-test("a Computer pane line is a row of its turn, in order, with the activity log's text; live only, never a timeline row (agent-computer D6, D21, D35)", () => {
+test("a Computer pane line is a row of its turn, in order, with the activity log's text (agent-computer D6, D21, D35)", () => {
   const events = [
     ev("prompt", 1, { text: "Open the shop" }),
     ev("computer", 1, { text: "Opened https://shop.test/" }),
@@ -569,12 +504,11 @@ test("a Computer pane line is a row of its turn, in order, with the activity log
     { kind: "computer", turn: 1, text: "You: Took over" },
   ], "an empty line is dropped");
   assert.deepEqual(rows.map((r) => r.kind), ["prompt", "computer", "computer", "computer", "computer", "text", "done"], "where they came, before the agent's reply");
-  assert.ok(!timelineRows(events).some((r) => (r.kind as string) === "computer"), "the first timeline's kinds stay as they were");
   const long = threadRows([ev("computer", 2, { text: `Opened ${"x".repeat(600)}\nnext` })])[0];
   assert.ok(long.kind === "computer" && long.text.length === 400 && !long.text.includes("\n"), "one line, clipped");
 });
 
-test("aliasCatalog: Claude's aliases at Vault's levels, Codex's own default, both marked as a short list", () => {
+test("aliasCatalog: Claude's aliases at every claude --effort level, Codex's own default, both marked as a short list", () => {
   const now = new Date("2026-10-07T12:00:00Z");
   const c = aliasCatalog(now);
   assert.equal(c.fetchedAt, now.toISOString());

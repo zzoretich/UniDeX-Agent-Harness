@@ -11,6 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ProgramContext } from "../../src/main/policy/programs";
 import { HostService, type HostServiceOptions } from "../../src/main/services/hosts";
+import { HostsCatalogArgs } from "../../src/main/ipc/schemas";
 
 const REPO = path.resolve(process.cwd(), "..");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aos-hosts-app-"));
@@ -96,12 +97,19 @@ test("catalog: the runtime's answer for each host; a host that does not answer k
   assert.deepEqual(await hosts({ vaultRoot: () => null }).catalog(), { ok: false, error: "no vault is open", code: "EROFS" });
 });
 
-test("D11: the catalog answers with the sessions surface off", async () => {
-  // HostService takes no surface switch: Code's composer and Routines read the model lists whichever surfaces are on.
-  const opts: HostServiceOptions & { enabled?: () => boolean } = { vaultRoot: () => vault, context: () => context, env, node: () => process.execPath, enabled: () => false };
-  const r = await new HostService(opts).catalog();
+test("D11: the catalog answers with the Computer surface off, the one surface switch HostService takes", async () => {
+  // Code's composer and Routines read the model lists whichever surfaces are on: only the Computer pane's notices wait on one.
+  const r = await hosts({ computerOn: () => false }).catalog(true);
   assert.ok(r.ok, JSON.stringify(r));
   assert.ok(r.data.hosts.claude && r.data.hosts.codex);
+});
+
+test("D11: hosts:catalog takes only whether to ask the hosts again; anything else the page sends is refused", () => {
+  assert.equal(HostsCatalogArgs.safeParse({}).success, true);
+  assert.equal(HostsCatalogArgs.safeParse({ refresh: true }).success, true);
+  for (const bad of [{ refresh: false }, { refresh: "yes" }, { refresh: 1 }, { refresh: true, host: "claude" }, { host: "claude" }, null, "refresh", []]) {
+    assert.equal(HostsCatalogArgs.safeParse(bad).success, false, JSON.stringify(bad));
+  }
 });
 
 test("postComputerNotice: one Notifications item from computer at level info, through the runtime's notify.js, the body on stdin (agent-computer D27)", async () => {

@@ -182,7 +182,8 @@ test.describe("no host on this Mac", () => {
     const h = app();
     const { win } = h;
     await openHistory(win);
-    await expect(history(win).locator(".aos-ch-nohost")).toHaveText("No host is signed in: History lists the past sessions on this Mac. Sign in to Claude Code or Codex to resume one.");
+    // Both hosts are off here, not signed out: the note names both ways back.
+    await expect(history(win).locator(".aos-ch-nohost")).toHaveText("No host is ready: History lists the past sessions on this Mac. Set up or sign in to Claude Code or Codex to resume one.");
     await expect(hrow(win, CLAUDE_ROW)).toHaveCount(1);
     await expect(hrow(win, CODEX_ROW)).toHaveCount(1);
     await expect(history(win).locator("button.aos-ch-resume")).toHaveCount(0);

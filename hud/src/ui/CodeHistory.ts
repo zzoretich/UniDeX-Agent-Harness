@@ -17,7 +17,7 @@ export interface CodeHistoryHost {
   close(): void;
 }
 
-export const NO_HOST_TEXT = "No host is signed in: History lists the past sessions on this Mac. Sign in to Claude Code or Codex to resume one.";
+export const NO_HOST_TEXT = "No host is ready: History lists the past sessions on this Mac. Set up or sign in to Claude Code or Codex to resume one.";
 
 export class CodeHistory {
   private root: HTMLElement | null = null;

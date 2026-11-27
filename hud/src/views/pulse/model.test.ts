@@ -73,10 +73,15 @@ test("remove-sessions D6: the live rows are Code's agent terminals only; a runni
   // A host whose Sessions list still answers a running thread, as main did before PR 2.
   const node = createNodeHost();
   setHudHost({ ...node, sessions: { list: async () => ({ ok: true, data: [{ id: "t1", workspace: "site", title: "Old thread", host: "claude", running: true }] }) } } as never);
-  const term = (host: string, title: string, exited = false) => ({ meta: { host, place: { label: "site", workspace: "site" } }, cwd: "/tmp/site", isExited: exited, getTitle: () => title });
-  const plugin = { terminalPool: { list: () => [term("claude", "Fix the tiles"), term("shell", "zsh"), term("codex", "Done", true)] }, termLauncher: { world: () => ({ vault: "/v", home: "/h", workspaces: ["site"], links: {} }) } };
-  const live = await liveRows(plugin as never);
-  assert.deepEqual(live.rows, [{ title: "Fix the tiles", sub: "Claude Code · site · Code", host: "claude" }]);
-  assert.ok(live.rows.every((r) => r.sub.endsWith("· Code")), "Show → opens Code for every row");
-  assert.equal(live.byWorkspace.get("site")?.total, 2, "the shell counts for the live dot, as Spaces' does");
+  try {
+    const term = (host: string, title: string, exited = false) => ({ meta: { host, place: { label: "site", workspace: "site" } }, cwd: "/tmp/site", isExited: exited, getTitle: () => title });
+    const plugin = { terminalPool: { list: () => [term("claude", "Fix the tiles"), term("shell", "zsh"), term("codex", "Done", true)] }, termLauncher: { world: () => ({ vault: "/v", home: "/h", workspaces: ["site"], links: {} }) } };
+    const live = await liveRows(plugin as never);
+    assert.deepEqual(live.rows, [{ title: "Fix the tiles", sub: "Claude Code · site · Code", host: "claude" }]);
+    assert.ok(live.rows.every((r) => r.sub.endsWith("· Code")), "Show → opens Code for every row");
+    assert.equal(live.byWorkspace.get("site")?.total, 2, "the shell counts for the live dot, as Spaces' does");
+  } finally {
+    // The next test in this process reads files through the host: it gets the plain Node one back.
+    setHudHost(node);
+  }
 });

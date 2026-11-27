@@ -2415,7 +2415,6 @@ button.aos-hm-trigger.is-open:not(.clickable-icon) { border-color: var(--udx-foc
 .aos-hm-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--udx-line-2); }
 .aos-hm-dot.is-claude { background: var(--udx-info); }
 .aos-hm-dot.is-codex { background: var(--udx-gate); }
-.aos-hm-dot.is-local { background: var(--udx-ok); }
 .aos-hm-lockicon { color: var(--udx-text-2); }
 .aos-hm-lockicon.is-claude { color: var(--udx-info); }
 .aos-hm-lockicon.is-codex { color: var(--udx-gate); }
