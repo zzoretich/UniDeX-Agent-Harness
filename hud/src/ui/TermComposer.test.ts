@@ -61,9 +61,11 @@ interface Inside { input: { value: string }; drafts: Map<string, string>; shots:
 
 function composer(o: { focusTerminal?: () => void } = {}) {
   const f = feeds();
-  const plugin = { codeFeeds: f, claudeConfigDir: () => "/nowhere", vaultRoot: () => "/nowhere", settings: { terminalSnippets: [] } };
+  const remembered: Array<[string, string | null]> = [];
+  const termLauncher = { rememberModel: (host: string, model: string | null) => { remembered.push([host, model]); } };
+  const plugin = { codeFeeds: f, termLauncher, claudeConfigDir: () => "/nowhere", vaultRoot: () => "/nowhere", settings: { terminalSnippets: [] } };
   const c = new TermComposer(el(), plugin as never, o.focusTerminal ?? (() => {}));
-  return { c, f, inside: c as unknown as Inside };
+  return { c, f, inside: c as unknown as Inside, remembered };
 }
 
 test("I1: closing the selected terminal with a draft leaves no draft behind, whether another terminal or none shows next", () => {
@@ -211,4 +213,39 @@ test("M3: with images the focus moves to the terminal only after the text and ‚è
   f.shows[2]("attached");
   await flush();
   assert.equal(focused, 1);
+});
+
+/** A pick in the model chip's menu, as a click on a model row makes it: the menu's own pick, then its onChange. */
+const pickInChip = (c: InstanceType<typeof TermComposer>, model: string | null): void =>
+  (c as unknown as { modelMenu: { pickModel(id: string | null): void } }).modelMenu.pickModel(model);
+
+test("remove-sessions D15: a model picked in the chip is what new terminals of that host start with, the one already running too", () => {
+  const { c, remembered } = composer();
+  const claude = term("a");
+  c.setSession(claude.s);
+  pickInChip(c, "opus");
+  assert.deepEqual(remembered, [["claude", "opus"]]);
+  // The model it runs already: nothing restarts, and the pick is still remembered.
+  (claude.t.meta as { model?: string }).model = "opus";
+  pickInChip(c, "opus");
+  assert.deepEqual(remembered, [["claude", "opus"], ["claude", "opus"]]);
+  // A Codex terminal remembers for Codex, its own default included.
+  const codex = term("b");
+  (codex.t.meta as { host: string }).host = "codex";
+  c.setSession(codex.s);
+  pickInChip(c, null);
+  assert.deepEqual(remembered.at(-1), ["codex", null]);
+});
+
+test("remove-sessions D15: a shell, or an agent terminal whose agent ended, remembers no pick", () => {
+  const { c, remembered } = composer();
+  const shell = term("s");
+  (shell.t.meta as { host: string }).host = "shell";
+  c.setSession(shell.s);
+  pickInChip(c, "opus");
+  const ended = term("e");
+  ended.t.agentEnded = true;
+  c.setSession(ended.s);
+  pickInChip(c, "opus");
+  assert.deepEqual(remembered, []);
 });

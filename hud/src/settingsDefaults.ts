@@ -373,6 +373,13 @@ export function computerPaneStart(raw: unknown, page: ComputerPaneId, windowWidt
   return { width: COMPUTER_PANE_WIDTH.default, collapsed: windowWidth < COMPUTER_PANE_NARROW };
 }
 
+/** The stored Computer pane with a page that no longer exists (Sessions' "chat", remove-sessions D8) left out, which
+ *  loadSettings saves once; null when it holds none, so a load saves nothing. */
+export function prunedComputerPane(raw: unknown): ComputerPaneChoice | null {
+  if (!isRecord(raw) || !Object.keys(raw).some((k) => !COMPUTER_PAGES.includes(k as ComputerPaneId))) return null;
+  return storedPanes(raw);
+}
+
 /** The stored Computer pane after a page's pane changed: that page's settings, cleaned, and the other page as it was
  *  stored (not saved stays not saved). Returns a new object to store. */
 export function rememberComputerPane(current: unknown, page: ComputerPaneId, pane: ComputerPaneSettings): ComputerPaneChoice {

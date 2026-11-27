@@ -26,7 +26,7 @@ const state = (session: string, o: Partial<HostComputerState> = {}): HostCompute
 
 test("remove-sessions D8: every page is Code: code:<terminal> is Code, a Sessions chat:<thread> key is no page's", () => {
   assert.equal(pageOfSession("code:t3"), "code");
-  assert.equal(pageOfSession("chat:5d2e"), null, "main may still send a Sessions browser until PR 2 retires the key");
+  assert.equal(pageOfSession("chat:5d2e"), null, "main drops a Sessions browser at start; one that came anyway is no page's");
   assert.equal(pageOfSession("duty:wrap"), null);
   assert.equal(pageOfSession(""), null);
 });

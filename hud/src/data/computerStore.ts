@@ -19,8 +19,8 @@ export interface AskRoute { page: ComputerPage; session: string | null }
 
 const NO_MARKS: RowMarks = { dot: false, waiting: false };
 
-/** The page an agent key belongs to: `code:<terminal id>` is Code; null for anything else, a Sessions `chat:<thread>`
- *  browser main may still hold included (remove-sessions D8). */
+/** The page an agent key belongs to: `code:<terminal id>` is Code; null for anything else (main drops a Sessions
+ *  thread's `chat:` browser when it starts, remove-sessions D8, so none should come). */
 export function pageOfSession(session: string): ComputerPage | null {
   return session.startsWith("code:") ? "code" : null;
 }

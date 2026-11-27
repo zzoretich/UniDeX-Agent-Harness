@@ -1,17 +1,15 @@
 // agentSessions.ts — what the HUD shows of an agent session (spec 2026-10-07-unidex-sessions S10, §4.2, §4.5; spec
 // 2026-10-07-sessions-ux U1–U11), made for the Sessions tab and kept for Code (remove-sessions D10). Pure: a thread's
-// events as timeline rows (tool calls as a verb and a target, the latest plan of a turn, a marker where the model, effort
-// or access changed), a turn's footer and elapsed time, +/− totals, which hosts the composer offers, the host and model
-// menu's and `/` menu's choices from the host catalog, and the aliases a window without the catalog offers. Code's chat,
-// panes and composer read them; helpers only the Sessions tab used go in remove-sessions PR 2.
+// events as the reader's rows (tool calls as a verb and a target, the latest plan of a turn, a marker where the model,
+// effort or access changed), a turn's line, +/− totals, which hosts the composer offers, the host and model menu's and
+// `/` menu's choices from the host catalog, and the aliases a window without the catalog offers. Code's chat, panes and
+// composer read them.
 import type { AgenticosJson, ProviderState, SessionHost } from "./aosConfig";
 import { sessionHosts } from "./aosConfig";
 import { ago } from "./notifications";
 import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionAccess, HostSessionEvent } from "../host";
 
 export const HOST_LABEL: Record<SessionHost, string> = { claude: "Claude Code", codex: "Codex" };
-/** What the composer says in place of Allow commands on a Codex thread (spec S5). */
-export const CODEX_SANDBOX_NOTE = "Codex runs commands in its sandbox";
 
 /** Folder names under <vault>/workspaces a session may run in: not hidden (`.git`) and not the team worktrees (`_…`). */
 export function workspaceNames(names: string[]): string[] {
@@ -24,11 +22,6 @@ export function usdText(usd: number): string {
 }
 
 export interface ToolCall { name: string; toolKind: string; filePath: string | null; summary: string }
-
-/** A tool row collapsed to one line: `kind · name · file`. */
-export function toolLine(t: ToolCall): string {
-  return [t.toolKind || "other", t.name, t.filePath].filter((s) => !!s).join(" · ");
-}
 
 export type TimelineRow =
   | { kind: "prompt"; turn: number; text: string }
@@ -272,31 +265,7 @@ function planItems(v: unknown): PlanItem[] {
   }).filter((d) => !!d.text);
 }
 
-/**
- * A thread's events as the rows the first timeline drew: threadRows without its plan, change and Computer rows. Kept for the
- * views that switch over TimelineRow's kinds.
- */
-export function timelineRows(events: HostSessionEvent[]): TimelineRow[] {
-  const out: TimelineRow[] = [];
-  for (const r of threadRows(events)) if (r.kind !== "plan" && r.kind !== "change" && r.kind !== "computer") out.push(r);
-  return out;
-}
-
-/** How long the thread's last turn has run (to now while it runs, to its `done` once it ended); null with no prompt. */
-export function turnElapsed(events: HostSessionEvent[], now: Date): number | null {
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].kind !== "prompt") continue;
-    const turn = events[i].turn;
-    const from = Date.parse(events[i].t);
-    if (!Number.isFinite(from)) return null;
-    const done = events.slice(i + 1).find((e) => e.kind === "done" && e.turn === turn);
-    const to = done ? Date.parse(done.t) : now.getTime();
-    return Number.isFinite(to) ? Math.max(0, to - from) : null;
-  }
-  return null;
-}
-
-/** A length of time as the working line and a turn's footer show it: 48s, 2m 14s, 1h 5m. */
+/** A length of time as a turn's line shows it: 48s, 2m 14s, 1h 5m. */
 export function durationText(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -304,40 +273,11 @@ export function durationText(ms: number): string {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
-/** The line under a running turn: `Working… (48s · esc to stop)`, or Stopping… once a stop was asked for. */
-export function workingText(ms: number | null, stopping = false): string {
-  if (stopping) return "Stopping…";
-  return ms === null ? "Working… (esc to stop)" : `Working… (${durationText(ms)} · esc to stop)`;
-}
-
-/** The model and effort each turn's first prompt recorded; a turn whose prompt recorded neither (an older thread) is
- *  left out, so its footer names no model. */
-export function turnChoices(events: HostSessionEvent[]): Map<number, { model: string | null; effort: string | null }> {
-  const out = new Map<number, { model: string | null; effort: string | null }>();
-  for (const e of events) {
-    if (e.kind !== "prompt" || out.has(e.turn) || !("model" in e || "effort" in e)) continue;
-    out.set(e.turn, { model: str(e.model) || null, effort: str(e.effort) || null });
-  }
-  return out;
-}
-
 /** A finished turn's line: `Done · Opus 5.5 · High · 2m 14s · $0.18 estimated · 1,200 in · 80 out`, "Did not finish"
  *  for one that failed, and no model part when its prompt recorded none. */
 export function doneLine(row: Extract<ThreadRow, { kind: "done" }>, choice?: string | null): string {
   const cost = row.footer.replace(/^did not finish · /, "");
   return [row.ok ? "Done" : "Did not finish", choice || "", row.ms === null ? "" : durationText(row.ms), cost].filter((s) => !!s).join(" · ");
-}
-
-/** The last finished turn's spend (its `done`, else its usage), for the status line; null before any turn ends. */
-export function lastTurnUsd(events: HostSessionEvent[]): { usd: number; estimated: boolean } | null {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
-    if (e.kind !== "done") continue;
-    const usage = events.find((u) => u.kind === "usage" && u.turn === e.turn);
-    const usd = num(e.usd) ?? num(usage?.usd);
-    return usd === null ? null : { usd, estimated: e.estimated === true };
-  }
-  return null;
 }
 
 /** Whether the thread's last turn is still running: it has a prompt and no `done` after it. */
@@ -349,22 +289,6 @@ export function turnOpen(events: HostSessionEvent[]): boolean {
   return false;
 }
 
-/**
- * `extra` appended to `base`, each record once. A thread is read from its file while its turn may still be sending
- * events; main writes a record before it sends it, so the two can overlap but never miss one.
- */
-export function mergeEvents(base: HostSessionEvent[], extra: HostSessionEvent[]): HostSessionEvent[] {
-  const seen = new Set(base.map((e) => JSON.stringify(e)));
-  const out = [...base];
-  for (const e of extra) {
-    const k = JSON.stringify(e);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(e);
-  }
-  return out;
-}
-
 /** A `git status --porcelain=v2` code in words. */
 export function fileStatusLabel(code: string): string {
   if (code === "??") return "new";
@@ -374,14 +298,6 @@ export function fileStatusLabel(code: string): string {
   if (code.includes("D")) return "deleted";
   if (code.includes("A")) return "added";
   return "modified";
-}
-
-/** The repository card's first line. */
-export function statusSummary(st: HostGitStatus): string {
-  if (!st.repo) return "Not a git repository";
-  const n = st.files.length;
-  if (!n) return "No changes";
-  return `${n} file${n === 1 ? "" : "s"} changed`;
 }
 
 export interface HostChoice { host: SessionHost; label: string; ready: boolean; reason: string | null }
@@ -433,11 +349,6 @@ export type CatalogCommand = HostCatalogHost["commands"][number];
 export const SESSION_EFFORTS: Record<SessionHost, string[]> = {
   claude: ["low", "medium", "high", "xhigh", "max"],
   codex: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
-};
-/** The levels Vault chat's one-shot paths take: `claude -p --effort` and `ask.js --effort=` (U9). */
-export const VAULT_EFFORTS: Record<SessionHost, string[]> = {
-  claude: ["low", "medium", "high", "xhigh", "max"],
-  codex: ["minimal", "low", "medium", "high", "xhigh"],
 };
 
 const EFFORT_LABEL: Record<string, string> = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "XHigh", max: "Max", ultra: "Ultra" };
@@ -553,26 +464,25 @@ export function sameModel(host: SessionHost, entry: HostCatalogHost | null, pick
 /**
  * The effort levels the menu offers for a model: the ones the catalog lists for it. No model is the host's default
  * (Claude's `default` alias, Codex's configured model); a model the catalog does not know takes the host's session
- * levels, since the runtime drops any its host does not take. In Vault mode only the one-shot path's levels are left.
+ * levels, since the runtime drops any its host does not take.
  */
-export function effortsFor(host: SessionHost, entry: HostCatalogHost | null, model: string | null, vault = false): string[] {
+export function effortsFor(host: SessionHost, entry: HostCatalogHost | null, model: string | null): string[] {
   const m = findModel(entry, model ?? (host === "claude" ? "default" : entry?.defaultModel ?? null));
-  const levels = m ? m.efforts : SESSION_EFFORTS[host];
-  return vault ? levels.filter((l) => VAULT_EFFORTS[host].includes(l)) : [...levels];
+  return [...(m ? m.efforts : SESSION_EFFORTS[host])];
 }
 
 /** A choice remembered in the HUD's settings for one host (U12). */
 export interface RememberedChoice { model?: string | null; effort?: string | null }
 
 /**
- * Where a new session (or a Vault question) starts on a host. Model: the remembered one; else on Claude `default`, on
+ * Where a new session starts on a host. Model: the remembered one; else on Claude `default`, on
  * Codex the configured default, else its first current model, else none (Codex's own). Effort: the remembered level
  * when the model takes it, else the catalog's default, else medium, else the model's first, else none.
  */
-export function defaultChoice(host: SessionHost, entry: HostCatalogHost | null, remembered?: RememberedChoice | null, vault = false): { model: string | null; effort: string | null } {
+export function defaultChoice(host: SessionHost, entry: HostCatalogHost | null, remembered?: RememberedChoice | null): { model: string | null; effort: string | null } {
   const model = remembered?.model
     || (host === "claude" ? "default" : entry?.defaultModel || entry?.models.find((m) => m.main)?.id || entry?.models[0]?.id || null);
-  const levels = effortsFor(host, entry, model, vault);
+  const levels = effortsFor(host, entry, model);
   const pick = [remembered?.effort, entry?.defaultEffort, "medium"].find((l) => !!l && levels.includes(l));
   return { model, effort: pick ?? levels[0] ?? null };
 }
@@ -583,14 +493,9 @@ export function modelArg(host: SessionHost, model: string | null): string | null
 }
 
 /** `Opus 5.5 · High`: the model and, when the model takes efforts and one is chosen, the effort. */
-export function choiceText(host: SessionHost, entry: HostCatalogHost | null, model: string | null, effort: string | null, vault = false): string {
+export function choiceText(host: SessionHost, entry: HostCatalogHost | null, model: string | null, effort: string | null): string {
   const name = modelName(host, entry, model);
-  return effort && effortsFor(host, entry, model, vault).includes(effort) ? `${name} · ${effortLabel(effort)}` : name;
-}
-
-/** The chip: `Claude Code · Opus 5.5 · High`, with no effort part for a model that takes none. */
-export function chipText(host: SessionHost, entry: HostCatalogHost | null, model: string | null, effort: string | null, vault = false): string {
-  return `${HOST_LABEL[host]} · ${choiceText(host, entry, model, effort, vault)}`;
+  return effort && effortsFor(host, entry, model).includes(effort) ? `${name} · ${effortLabel(effort)}` : name;
 }
 
 /** Models whose name, id or description holds the query, ignoring case; all of them for an empty query. */
@@ -620,16 +525,11 @@ export interface AccessLevel {
   hosts: Record<SessionHost, string>;
 }
 
-export const DEFAULT_ACCESS: HostSessionAccess = "edit";
-
 export const ACCESS_LEVELS: AccessLevel[] = [
   { id: "read", label: "Read only", description: "Reads, searches and plans. Changes nothing.", hosts: { claude: "plan mode", codex: "read-only sandbox" } },
   { id: "edit", label: "Edit files", description: "Edits files in this workspace. The default.", hosts: { claude: "acceptEdits", codex: "workspace-write" } },
   { id: "run", label: "Edit and run commands", description: "Also runs shell commands: tests, builds, git status.", hosts: { claude: "acceptEdits + Bash", codex: "same as Edit files" } },
 ];
-
-/** What the access menu says under its levels: Codex has no level that edits without running commands (spec §5). */
-export const CODEX_ACCESS_NOTE = "Codex runs commands inside its sandbox at every level that edits, with no network.";
 
 /** Whether a value is one of the three levels (a prompt event read from an older thread may carry none). */
 export function isAccess(v: unknown): v is HostSessionAccess {
@@ -639,12 +539,6 @@ export function isAccess(v: unknown): v is HostSessionAccess {
 /** An access level in words. */
 export function accessLabel(access: HostSessionAccess): string {
   return ACCESS_LEVELS.find((l) => l.id === access)?.label ?? access;
-}
-
-/** A level's mapping line in the menu: `Claude: plan mode · Codex: read-only sandbox`, or one host's part alone. */
-export function accessHostLine(level: AccessLevel, host?: SessionHost): string {
-  const short: Record<SessionHost, string> = { claude: "Claude", codex: "Codex" };
-  return (host ? [host] : (["claude", "codex"] as SessionHost[])).map((h) => `${short[h]}: ${level.hosts[h]}`).join(" · ");
 }
 
 // ── the `/` menu (spec 2026-10-07-sessions-ux U8) ──
@@ -658,11 +552,6 @@ export function commandQuery(text: string, host: SessionHost): string | null {
   if (lead !== "/" && !(host === "codex" && lead === "$")) return null;
   const rest = text.slice(1);
   return /\s/.test(rest) ? null : rest;
-}
-
-/** Whether the composer is typing a command (the `/` menu is open). */
-export function commandTyping(text: string, host: SessionHost): boolean {
-  return commandQuery(text, host) !== null;
 }
 
 /**
@@ -685,7 +574,7 @@ export function filterCommands(commands: CatalogCommand[], query: string, limit 
 
 // ── the aliases a window without the catalog offers (moved from claudeAsk.ts, remove-sessions D10) ──
 
-/** The levels `claude --effort` takes, all of which the chat surface admits (spec 2026-10-07-sessions-ux U9). */
+/** The levels `claude --effort` takes (spec 2026-10-07-sessions-ux U9). */
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 /** Why the menu shows only the aliases: the app's catalog was not there to ask. */

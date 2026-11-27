@@ -153,12 +153,12 @@ export class CodeStage {
 
   // ── Code ▸ History (remove-sessions D3) ──
 
-  /** Shows History over the stage: the past conversation goes. */
+  /** Shows History over the stage: the past conversation goes. The panel that asked draws the sidebar after, as for
+   *  closeHistory. */
   showHistory(): void {
     if (!this.history) return;
     if (this.past) { this.past = null; this.pastData = null; this.pastSeq++; }
     this.history.show();
-    this.host.renderTabs();
   }
 
   closeHistory(): void { this.history?.hide(); }

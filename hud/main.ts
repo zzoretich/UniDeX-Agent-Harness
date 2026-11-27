@@ -26,7 +26,7 @@ import { LiveRunsWatcher } from "./src/data/liveRuns";
 import { COMMAND_REGISTRY, executeCommand, setSpawnContext } from "./src/data/commandRegistry";
 import { resolveNodeBinary } from "./src/data/nodeResolver";
 import { readAgenticosJson, readVaultConfig, readProviderState, claudeConfigDir as defaultClaudeConfigDir } from "./src/data/aosConfig";
-import { DEAD_SETTINGS_KEYS, rememberFilesChoice } from "./src/settingsDefaults";
+import { DEAD_SETTINGS_KEYS, prunedComputerPane, rememberFilesChoice } from "./src/settingsDefaults";
 import { runAos, runAosJson } from "./src/data/aosRun";
 import type { AosResult, AosJsonResult } from "./src/data/aosRun";
 import type { VaultConfig } from "./src/data/aosConfig";
@@ -241,8 +241,11 @@ export default class AgenticOSPlugin extends Plugin {
     this.settings = merged as unknown as AgenticOSSettings;
 
     // One-time prune of dead data.json keys: the pre-P0 paths, and the HUD-only cost/telemetry toggles that the system's
-    // own cost.enabled / telemetry.enabled replaced (spec 2026-09-24-settings-tab D10).
+    // own cost.enabled / telemetry.enabled replaced (spec 2026-09-24-settings-tab D10); and the Computer pane's page for
+    // the Sessions tab, which went (remove-sessions D8).
     const pruned = DEAD_SETTINGS_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(raw, k));
+    const panes = prunedComputerPane(raw.computerPane);
+    if (panes) { this.settings.computerPane = panes; pruned.push("computerPane's old pages"); }
     if (pruned.length > 0) {
       await this.saveSettings();
       console.info(`[agentic-os] pruned dead settings keys: ${pruned.join(", ")}`);

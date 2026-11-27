@@ -1,8 +1,8 @@
-// sessionHistory.ts — Sessions ▸ History (install-import B11): every past Claude Code and Codex session on this Mac, from
+// sessionHistory.ts — Code ▸ History (install-import B11, remove-sessions): every past Claude Code and Codex session on this Mac, from
 // the caches the runtime writes, never a transcript: brain/_index/session-index.json (collectors/hostSessions.js indexes
 // each host's transcripts: who, where, when, the title) and brain/_index/session-digests.json (the import-digest
-// routine's one-line summaries and workspaces, lib/import/digest.js). Interactive sessions only: a headless run, a
-// Sessions thread (run headless by the app) and a team seat's run, and a Codex subagent, are not History; two
+// routine's one-line summaries and workspaces, lib/import/digest.js). Interactive sessions only: a headless run (an old
+// Sessions tab thread among them) and a team seat's run, and a Codex subagent, are not History; two
 // transcripts naming one session (Claude Code's small stub files) are one row. A title is the digest's when there is one
 // (the scan's, a Codex thread's own name included), else the index's, else the first prompt. Resume follows spaces-redesign D7 and
 // D31: a Code terminal typing `claude --resume <id>` or `codex resume -C <folder> <id>`, only for a host that is on,
@@ -128,11 +128,6 @@ export function parseDigests(text: string | null): Map<string, Digest> {
     out.set(`${host}:${id.toLowerCase()}`, { summary: summary.replace(/\s+/g, " ").trim(), workspace: str(d.workspace), title: str(d.title) });
   }
   return out;
-}
-
-/** Whether History has a session to list: the index names one (the Sessions rail button follows this too). */
-export function hasHistory(indexText: string | null): boolean {
-  return parseSessionIndex(indexText).length > 0;
 }
 
 /** The local day (YYYY-MM-DD) and time (HH:MM) of an instant; empty for none. */

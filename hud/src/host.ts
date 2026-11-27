@@ -223,7 +223,7 @@ export interface HostComputerState {
 }
 export type HostComputerEvent = { type: "state"; state: HostComputerState } | { type: "reveal"; askId: string };
 
-/** The pane's calls. A browser belongs to a session: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`) or `chat:<thread>` (session-browser S1). */
+/** The pane's calls. A browser belongs to a session: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`, session-browser S1). */
 export interface HostComputer {
   /** Whether the Computer surface is on for this run of the app (agent-computer D26; it cannot change while the app
    *  runs). Off, or absent (fail closed; the app always sets it): the pane is only its collapsed strip, whatever its page

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HISTORY_PAGE, dayLabel, filterHistory, groupByDay, hasHistory, historyCount, historyRows, localDayTime, parseDigests, parseSessionIndex, resumeFor,
+  HISTORY_PAGE, dayLabel, filterHistory, groupByDay, historyCount, historyRows, localDayTime, parseDigests, parseSessionIndex, resumeFor,
   type IndexedSession,
 } from "./sessionHistory";
 import type { PlaceWorld, TermHostChoice } from "./terminalLaunch";
@@ -46,9 +46,7 @@ test("the index's interactive sessions, one row per session id per host", () => 
   assert.deepEqual([cl.title, cl.cwd, cl.startedAt, cl.lastAt, cl.fileMatches], ["Tide parser", `${VAULT}/workspaces/harbor`, "2026-10-14T09:59:00.000Z", "2026-10-14T10:30:00.000Z", true]);
   assert.equal(s.find((x) => x.id.endsWith("09"))!.archived, true);
   for (const bad of [null, "", "not json", "[]", '{"files":[]}', '{"schema":1}']) assert.deepEqual(parseSessionIndex(bad), [], String(bad));
-  assert.equal(hasHistory(INDEX), true);
-  assert.equal(hasHistory('{"schema":1,"files":{}}'), false);
-  assert.equal(hasHistory(null), false);
+  assert.deepEqual(parseSessionIndex('{"schema":1,"files":{}}'), [], "an index with no sessions lists none");
 });
 
 test("digests by host and id, one line each; rows without an id or a summary are skipped", () => {

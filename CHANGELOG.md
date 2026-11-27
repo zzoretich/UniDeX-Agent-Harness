@@ -17,6 +17,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ### Fixed
 - A folder removed outside the app in one go (`rm -rf`, a finished team run's `running/`) now drops its files from every tab at once. When macOS reported only the folder, they stayed (an ended run could still show in the Agent Workspace's NOW) until the tab's next timed refresh.
+- Code ▸ History's note when no host can resume a session now reads "No host is ready … Set up or sign in to Claude Code or Codex". It said "No host is signed in" even when both hosts were off or one wasn't installed.
 
 ### Upgrading
 - Your old Sessions threads stay where they were, in `brain/_index/sessions/<workspace>/`; UniDeX no longer reads them. Each one was a headless host session, whose id is on the file's `"kind":"session"` line (the file's own name is the thread's id, not the session's). To pick one up, run `codex resume <session id>` or `claude -p --resume <session id> "<prompt>"` (as Sessions ran it) in that workspace's folder; Spaces lists them as headless runs, and a Codex one resumes from there like any Codex run. Renaming or archiving a workspace leaves them where they are.
