@@ -190,6 +190,57 @@ test.describe("the Code chat surface on", () => {
     }
   });
 
+  test("an agent terminal in its chat when Code opens again has the terminal view's rows: the first flip keeps them (C1, R51)", async () => {
+    // Leaving Code and coming back mounts a new panel. Its first fit of a terminal whose chat shows counts the rows the
+    // terminal view will give, which needs the composer's height there; that composer has only just been laid out under
+    // the stage, on its way into the chat. Measured then, the rows match; a rough default left them a row off at
+    // 1480 x 920 (34 then 33), so the first ⌘J resized the agent's PTY (and on CI's slower start-up the same happened
+    // to a terminal that opened in its chat).
+    const { win } = app();
+    const size = () => win.evaluate((i) => {
+      const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { dimensions: { cols: number; rows: number } } | undefined } } } }).aosHost.plugin.terminalPool.get(i);
+      return s?.dimensions ?? null;
+    }, agent);
+    const settled = async () => {
+      let last = "";
+      let same = 0;
+      await expect.poll(async () => {
+        const now = JSON.stringify(await size());
+        same = now === last ? same + 1 : 0;
+        last = now;
+        return same;
+      }, { intervals: [100] }).toBeGreaterThanOrEqual(4);
+      return (await size())!;
+    };
+    if (!agent) {
+      writeCache(KEY, conversation(SID, FX.v("workspaces/harbor-map/src/tide.ts")));
+      await openTab(win, "term");
+      agent = await startAgent(win, { host: "claude", terminalKey: KEY, sessionId: SID, label: "Tide parser" });
+    }
+    const r = await emulateViewport(win, { width: 1480, height: 920, scale: 1 });
+    const style = await win.addStyleTag({ content: "::-webkit-scrollbar { width: 15px; height: 15px; } ::-webkit-scrollbar-thumb { background: #888; border-radius: 6px; }" });
+    try {
+      await openTab(win, "term");
+      await select(win, agent);
+      await expect(chat(win)).toBeVisible();
+      await openTab(win, "pulse");
+      await openTab(win, "term");
+      await expect(chat(win)).toBeVisible();
+      const chatSize = await settled();
+      await win.keyboard.press("Meta+j");
+      await expect(body(win)).toBeVisible();
+      const termSize = await settled();
+      const moved = `${JSON.stringify(chatSize)} then ${JSON.stringify(termSize)}`;
+      expect(Math.abs(termSize.cols - chatSize.cols), moved).toBeLessThanOrEqual(1);
+      expect(termSize.rows, moved).toBe(chatSize.rows);
+      await win.keyboard.press("Meta+j");
+      await expect(chat(win)).toBeVisible();
+    } finally {
+      await style.evaluate((n) => (n as Element).remove());
+      await r();
+    }
+  });
+
   test("at 960x600 an agent's chat keeps its composer whole: the send button and every chip inside the window, nothing scrolls", async () => {
     const { win } = app();
     if (!agent) {

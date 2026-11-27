@@ -83,7 +83,8 @@ export interface TerminalPanelOptions {
 
 /** How long the "Started … · Change" note stays after a launch. */
 const STARTED_MS = 6000;
-/** The terminal view's composer height (px) until one is measured: a rough figure, the first ⌘J corrects it. */
+/** The terminal view's composer height (px) until one is measured: a rough figure. The composer is measured whenever it
+ *  is laid out under the stage, on its way into the chat too, so only a fit before it ever was uses this. */
 const TERM_COMPOSER_H = 200;
 
 export class TerminalPanel {
@@ -143,6 +144,7 @@ export class TerminalPanel {
         this.openLink(href, sessionForLink(view, o ? codeSession(o) : null));
       },
       renderTabs: () => this.renderTabs(),
+      measureComposer: () => this.measureTermComposer(),
     }, {
       history: () => this.model.history(),
       resume: (r) => void this.resumeHistory(r),
@@ -786,6 +788,13 @@ export class TerminalPanel {
    *  sits inside the chat then, off the stage). */
   private termComposerH = TERM_COMPOSER_H;
 
+  /** Keeps the composer's height while it is laid out under the stage as the terminal view has it; a hidden composer, or
+   *  one already in the chat, leaves the last. */
+  private measureTermComposer(): void {
+    const el = this.composer?.el;
+    if (el?.isConnected && el.offsetHeight && !el.hasClass("is-chat")) this.termComposerH = el.getBoundingClientRect().height;
+  }
+
   /** The rows the terminal view will give this terminal, counted while the chat shows: the stage's height less the
    *  composer's, in this terminal's lines, as the fit addon counts them (whole pixels, then whole lines: R52). */
   private termViewRows(b: XtermBinding): number {
@@ -820,7 +829,7 @@ export class TerminalPanel {
           if (!d || (d.cols === b.term.cols && d.rows === b.term.rows)) break;
         }
         if (d) b.fittedAt = at;
-        if (this.composer?.el.isConnected && this.composer.el.offsetHeight) this.termComposerH = this.composer.el.getBoundingClientRect().height;
+        this.measureTermComposer();
         return;
       }
       // While the chat shows, the terminal lies hidden under it at the size the terminal view last gave it, so ⌘J redraws

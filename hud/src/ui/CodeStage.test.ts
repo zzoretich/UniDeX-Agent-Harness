@@ -17,7 +17,7 @@ const { CodeStage } = require("./CodeStage") as typeof Stage;
 
 function stage() {
   let draws = 0;
-  const host = { activeId: () => null, activeSession: () => undefined, composer: () => null, setView: () => {}, openLink: () => {}, renderTabs: () => { draws++; } };
+  const host = { activeId: () => null, activeSession: () => undefined, composer: () => null, setView: () => {}, openLink: () => {}, renderTabs: () => { draws++; }, measureComposer: () => {} };
   const s = new CodeStage({} as never, host, {} as never);
   const history = { shown: false, show() { this.shown = true; }, hide() { this.shown = false; } };
   s.history = history as never;
