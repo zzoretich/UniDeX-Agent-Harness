@@ -260,6 +260,19 @@ export class Vault extends Events {
       this.trigger(existed ? "modify" : "create", new TFile(this, rel, stats));
       return;
     }
-    if (this.known.delete(rel)) this.trigger("delete", new TFile(this, rel, { ctime: 0, mtime: 0, size: 0 }));
+    if (this.known.delete(rel)) {
+      this.trigger("delete", new TFile(this, rel, { ctime: 0, mtime: 0, size: 0 }));
+      return;
+    }
+    // Gone, and not a file the index knew: a folder removed whole. A busy FSEvents queue can report `rm -rf` as the
+    // folder's path alone, so every known file under it is deleted here, or a tab waiting on one keeps showing it.
+    // (An atomic write's temp file lands here too, so this walks the keys without copying them.)
+    const under = `${rel}/`;
+    const gone: string[] = [];
+    for (const k of this.known.keys()) if (k.startsWith(under)) gone.push(k);
+    for (const f of gone) {
+      this.known.delete(f);
+      this.trigger("delete", new TFile(this, f, { ctime: 0, mtime: 0, size: 0 }));
+    }
   }
 }
