@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.9.0] — 2026-11-27
+
 ### Changed
 - **History moved into Code.** **All history** at the foot of Code's list shows every past Claude Code and Codex session on this Mac over Code's stage, by day, with the filter and **Resume** in a new terminal; it works with no host signed in too. <!-- tour: code.history -->
 - Code's model chip remembers its pick: new terminals of that host start on the model you last picked there. <!-- no-tour: the chip already has its step -->
@@ -820,7 +822,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.9.0
 [2.8.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.8.0
 [2.7.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.7.0
 [2.6.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.6.0
