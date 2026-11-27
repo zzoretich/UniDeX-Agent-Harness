@@ -21,7 +21,13 @@ import {
 // ── the fixture sites ────────────────────────────────────────────────
 
 interface Seen { method: string; url: string; body: string }
-interface Site { port: number; seen: Seen[]; close(): Promise<void> }
+interface Site {
+  port: number;
+  seen: Seen[];
+  /** Holds every answer for the start page (/) until the returned function is called, as a slow network would. */
+  holdStart(): () => void;
+  close(): Promise<void>;
+}
 
 const escHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c);
 
@@ -32,6 +38,8 @@ async function startSite(): Promise<Site> {
   const dir = path.join(__dirname, "fixtures", "computer");
   const seen: Seen[] = [];
   const html = { "content-type": "text/html; charset=utf-8" };
+  let startHeld: Promise<void> | null = null;
+  let releaseHeld = () => {};
   const server = http.createServer((req, res) => {
     let body = "";
     req.setEncoding("utf8");
@@ -59,7 +67,9 @@ async function startSite(): Promise<Site> {
       } else if (url.startsWith("/note?")) {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end("<!doctype html><title>Noted</title><p>Noted</p>");
       } else if (url === "/") {
-        res.writeHead(200, html).end("<!doctype html><title>Start</title><p>Start page</p>");
+        const answer = () => { res.writeHead(200, html).end("<!doctype html><title>Start</title><p>Start page</p>"); };
+        if (startHeld) void startHeld.then(answer);
+        else answer();
       } else if (url.startsWith("/?q=")) {
         const q = new URLSearchParams(url.slice(2)).get("q") ?? "";
         const result = `http://result.test:${(server.address() as { port: number }).port}/result`;
@@ -70,7 +80,13 @@ async function startSite(): Promise<Site> {
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { port: (server.address() as { port: number }).port, seen, close: () => new Promise((resolve) => { server.close(() => resolve()); }) };
+  const holdStart = (): (() => void) => {
+    startHeld = new Promise<void>((resolve) => { releaseHeld = () => { startHeld = null; resolve(); }; });
+    return releaseHeld;
+  };
+  // A test that fails before its release still lets the held answers go, or close would wait on their connections.
+  const close = () => new Promise<void>((resolve) => { releaseHeld(); server.close(() => resolve()); });
+  return { port: (server.address() as { port: number }).port, seen, holdStart, close };
 }
 
 let site: Site;
@@ -1273,14 +1289,17 @@ test.describe("session browser: one per session, off until the user turns it on 
       const trust = p.locator(".aos-cp-trust");
       await trust.click();
       await expect(trust).toHaveText(`Acts freely on ${shopHost()}`);
+      // The + tab exists before its start page commits: a slow start page (held here) must not change what the test sees.
+      const releaseStart = site.holdStart();
       await p.locator(".aos-cp-tabnew").click();
       await expect(p.locator(".aos-cp-tab")).toHaveCount(2);
       await p.locator(".aos-cp-tab").first().click();
       await expect(p.locator(".aos-cp-tab").first()).toHaveClass(/is-active/);
       const field = refOf((await a.call("computer_snapshot")).text, "textbox", "Search");
-      const before = await a.call("computer_status");
-      expect(tabLines(before)).toContain(shopHost());
-      expect(tabLines(before)).toContain(searchHost()); // the + opens the start page
+      releaseStart();
+      // The + opens the start page; its tab reads about:blank until the page commits, so its address is polled for.
+      await expect.poll(async () => tabLines(await a.call("computer_status")), { message: "the + tab reached the start page" }).toContain(searchHost());
+      expect(tabLines(await a.call("computer_status"))).toContain(shopHost());
       const typing = a.call("computer_type", { text: "rope ".repeat(800), ref: field });
       await expect(p.locator(".aos-cp-acting")).toHaveText(/^Acting: /);
       await sw.click();
