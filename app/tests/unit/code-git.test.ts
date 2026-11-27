@@ -106,8 +106,7 @@ function repo(dir: string): void {
 }
 repo(tide);
 repo(code);
-// Sessions off: code:git never asks it.
-const git = new GitService({ workspace: () => ({ refusal: "not used" }), enabled: () => false, env: process.env });
+const git = new GitService({ env: process.env });
 
 test("statusAt and diffAt read a folder's repository: its branch, the changed files with their counts, one file's diff", async () => {
   fs.writeFileSync(path.join(tide, "a.txt"), "uno\ntwo\n");

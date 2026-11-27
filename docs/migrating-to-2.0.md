@@ -42,7 +42,7 @@ answer or dismiss it; quitting the app with one open asks again next time.
    box, worded for your hosts, also moves the Chief of Staff to Opus 5.5 / gpt-6-sol.
    - **Go local** runs `aos migrate local-first --apply` (with `--chief` while the box is ticked): it first backs up
      every setting it changes to `brain/_index/migrations/local-first-<time>.json`, then sets `provider: local` and
-     `ai.chat`, `ai.ask`, `ai.reflectWeek` and `ai.consolidate` to `local` in both `agenticos.json` and
+     `ai.ask`, `ai.reflectWeek` and `ai.consolidate` to `local` in both `agenticos.json` and
      `brain/config.json`, moves the Chief of Staff when ticked (`persona.model: claude-opus-5-5`,
      `persona.codexModel: gpt-6-sol`, `persona.failover: true`), updates the hourly `brain/routines/tick.md` to 2.0's local triage only while it
      is byte for byte one a release shipped (an edited one is kept, and a notification says why), and re-renders your

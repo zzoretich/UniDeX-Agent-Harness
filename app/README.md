@@ -51,8 +51,9 @@ npm start
 ```
 
 Every Workbench surface writes to the vault, as the HUD always has; writes outside the surfaces in
-`src/shared/surfaces.ts` are refused and logged. `AOS_APP_WRITE` narrows a run: `""` is read-only, `todo,chat` turns
-on only those. The Code tab is a real shell: what you run there, or what a ❯_ button types for you, runs for real. Its New button,
+`src/shared/surfaces.ts` are refused and logged. `AOS_APP_WRITE` narrows a run: `""` writes through no surface, `todo,notifications` turns
+on only those. Main still answers Code's model lists whatever it says: the hosts' catalog runs the runtime's
+`lib/sessions.js catalog` and refreshes `brain/_index/host-catalog.json` (remove-sessions D11). The Code tab is a real shell: what you run there, or what a ❯_ button types for you, runs for real. Its New button,
 ⌘T and ⌥⌘1–3 start Claude Code or Codex as the terminal's own process (the binary the runtime resolves, its install form
 checked; else by typing the command into a fresh shell, as before) or a shell, in the vault, a workspace (or its linked
 code folder) or Scratch (`data/terminalLaunch.ts`); terminals start with the login shell's `PATH`.

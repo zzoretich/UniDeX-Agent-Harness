@@ -259,7 +259,6 @@ export interface WorkspaceSessionRow {
   via: "app" | "team" | "cwd" | "worktree" | "files";
   resumable: boolean;
   reason: string | null;   // why not, shown as is
-  thread?: string;         // a Sessions thread's id, via "app" only
 }
 
 /** Sessions of both hosts that ran inside a workspace (collectors/hostSessions.js, workspace hub D2). */

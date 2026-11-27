@@ -79,3 +79,14 @@ test('unknownKeys and invalidValues (D12): typos and bad values, while an object
   assert.deepEqual(W.unknownKeys(S.DEFAULTS), [], 'the shipped defaults are all known');
   assert.deepEqual(W.invalidValues(S.DEFAULTS), []);
 });
+
+test('D12: dropRetired removes sessions and ai.chat, keeps ai\'s other keys, and says what it removed', () => {
+  assert.deepEqual(W.RETIRED_KEYS, ['sessions', 'ai.chat']);
+  const o = { sessions: { perDayUsd: 25 }, ai: { chat: 'claude', ask: 'host' }, x: 1 };
+  assert.deepEqual(W.dropRetired(o), ['sessions', 'ai.chat']);
+  assert.deepEqual(o, { ai: { ask: 'host' }, x: 1 });
+  assert.deepEqual(W.dropRetired(o), [], 'nothing left to drop');
+  const only = { ai: { chat: 'local' } };
+  assert.deepEqual(W.dropRetired(only), ['ai.chat']);
+  assert.deepEqual(only, {}, 'an ai object left empty goes too');
+});

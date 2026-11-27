@@ -60,7 +60,7 @@ const STATES = ['pending', 'applying', 'applied', 'declined', 'undone'];
 const ACTIONS = ['status', 'apply', 'decline', 'undo'];
 const USAGE = 'aos migrate [local-first|import] [--status | --apply [--chief] | --decline | --undo] [--accept <json list>] [--json]';
 /** local-first A2: the AI features that follow `ai.<feature>` under provider local. */
-const AI_KEYS = ['ai.chat', 'ai.ask', 'ai.reflectWeek', 'ai.consolidate'];
+const AI_KEYS = ['ai.ask', 'ai.reflectWeek', 'ai.consolidate'];
 /** SHA-256 of every tick.md a release shipped before 2.0 (vault-template/persona/routines/tick.md at v0.7.0–v0.13.0 and
  *  at v0.14.0–v1.9.0). The persona interview copies it verbatim into brain/routines/, so an untouched one matches. */
 const SHIPPED_TICKS = Object.freeze([

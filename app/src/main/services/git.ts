@@ -1,10 +1,8 @@
-// A workspace's repository, for Sessions (spec 2026-10-07-unidex-sessions S9): what changed, one file's diff, and the
-// commit the user asks for. Everything but commit only reads. Commit runs `git add -A` and `git commit -m <message>`
-// only on the Commit button, with the message the user saw; nothing is ever pushed. git is the user's own (a bare
-// name main's PATH finds), run without a shell in the workspace folder with a timeout. A file the page names must stay
-// inside the workspace and follows `--`, so it is never read as an option. statusAt and diffAt read a folder main chose
-// itself: a workspace's, or for the Code tab's Diff (code-chat C8) a workspace's or its linked code folder's
-// (services/code-git.ts), with the same guards.
+// A repository's status and diffs, for the Code tab's Diff (code-chat C8): statusAt and diffAt read a folder main chose
+// itself, a workspace's or its linked code folder's (services/code-git.ts). Everything here only reads (Sessions' commit
+// went with it, remove-sessions D11). git is the user's own (a bare name main's PATH finds), run without a shell in that
+// folder with a timeout. A file the page names must stay inside the folder and follows `--`, so it is never read as an
+// option.
 
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
@@ -72,10 +70,6 @@ export function filterOverrides(out: string): string[] {
 export type WorkspaceDir = { dir: string } | { refusal: string };
 
 export interface GitServiceOptions {
-  /** The folder of a workspace by name, or why there is none (shared with the session service). */
-  workspace: (name: string) => WorkspaceDir;
-  /** Whether the Sessions surface is on. */
-  enabled: () => boolean;
   env: NodeJS.ProcessEnv;
   execFileImpl?: typeof childProcess.execFile;
 }
@@ -165,9 +159,9 @@ const NOT_REPO: GitStatus = { repo: false, branch: null, detached: false, mergin
 export class GitService {
   constructor(private readonly o: GitServiceOptions) {}
 
-  /** `git <guard> <args…>` in `dir`. A read (the default) gets READ_ENV; only add and commit pass `write`. */
-  private run(dir: string, args: readonly string[], o: { maxBuffer?: number; write?: boolean } = {}): Promise<Run> {
-    const env: NodeJS.ProcessEnv = { ...this.o.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", [EMPTY_ENV]: "", [FALSE_ENV]: "false", ...(o.write ? {} : READ_ENV) };
+  /** `git <guard> <args…>` in `dir`, as a read (READ_ENV). */
+  private run(dir: string, args: readonly string[], o: { maxBuffer?: number } = {}): Promise<Run> {
+    const env: NodeJS.ProcessEnv = { ...this.o.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C", [EMPTY_ENV]: "", [FALSE_ENV]: "false", ...READ_ENV };
     // The cwd picks the repository, never a GIT_DIR or work tree inherited from a parent git process.
     for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]) delete env[k];
     const maxBuffer = o.maxBuffer ?? STATUS_MAX;
@@ -187,17 +181,6 @@ export class GitService {
     const r = await this.run(dir, ["config", "-z", "--show-scope", "--name-only", "--get-regexp", "^filter\\."]);
     if (r.code === 1 && !r.stdout) return []; // no filter defined anywhere
     return r.code === 0 ? filterOverrides(r.stdout) : null;
-  }
-
-  private dir(workspace: string): WorkspaceDir {
-    if (!this.o.enabled()) return { refusal: "the Sessions surface is off" };
-    return this.o.workspace(workspace);
-  }
-
-  async status(workspace: string): Promise<Result<GitStatus>> {
-    const w = this.dir(workspace);
-    if ("refusal" in w) return refused(w.refusal);
-    return this.statusAt(w.dir);
   }
 
   /** The status of the repository whose top level is `dir` (a folder main chose: a workspace, or code-chat's code:git). */
@@ -236,12 +219,6 @@ export class GitService {
     return { repo: true, merging, ...st };
   }
 
-  async diff(workspace: string, file?: string): Promise<Result<GitDiff>> {
-    const w = this.dir(workspace);
-    if ("refusal" in w) return refused(w.refusal);
-    return this.diffAt(w.dir, file);
-  }
-
   /** The diff of the repository whose top level is `dir`, or of one file in it; a file that leads out of `dir` is refused. */
   async diffAt(dir: string, file?: string): Promise<Result<GitDiff>> {
     if (file !== undefined) { const why = fileRefusal(file); if (why) return refused(why); }
@@ -266,24 +243,6 @@ export class GitService {
     return { ok: true, data: { stat: stat.stdout, text: text.stdout, truncated: text.truncated } };
   }
 
-  async commit(workspace: string, message: string): Promise<Result<{ commit: string }>> {
-    const w = this.dir(workspace);
-    if ("refusal" in w) return refused(w.refusal);
-    const msg = message.trim();
-    if (!msg) return refused("a commit needs a message");
-    const st = await this.statusOf(w.dir);
-    if (!st.repo) return refused("not a git repository");
-    if (st.detached) return refused("HEAD is detached: check out a branch first");
-    if (st.merging) return refused("a merge is in progress");
-    if (!st.files.length) return refused("nothing to commit");
-    // The user's own commit: the repository's filters, hooks and signing run, as in a terminal (GIT_GUARD).
-    const add = await this.run(w.dir, ["add", "-A"], { write: true });
-    if (add.code !== 0) return { ok: false, error: lastLine(add.stderr) || "git add failed", code: "EIO" };
-    const done = await this.run(w.dir, ["commit", "-m", msg], { write: true });
-    if (done.code !== 0) return { ok: false, error: lastLine(done.stderr || done.stdout) || "git commit failed", code: "EIO" };
-    const head = await this.run(w.dir, ["rev-parse", "HEAD"]);
-    return { ok: true, data: { commit: head.stdout.trim() } };
-  }
 }
 
 /**
@@ -317,8 +276,4 @@ function plainNewFile(file: string): boolean {
 function sameDir(a: string, b: string): boolean {
   if (!a) return false;
   try { return fs.realpathSync(a) === fs.realpathSync(b); } catch { return false; }
-}
-
-function lastLine(s: string): string {
-  return s.trim().split("\n").filter(Boolean).slice(-1)[0]?.slice(0, 300) ?? "";
 }

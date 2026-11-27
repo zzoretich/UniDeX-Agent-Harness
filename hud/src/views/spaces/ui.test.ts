@@ -18,7 +18,6 @@ const VAULT = "/home/demo/vault";
 const ago = (min: number): string => new Date(NOW - min * 60000).toISOString();
 const ID1 = "0a1b2c3d-1111-4222-8333-444455556666";
 const ID2 = "9f8e7d6c-aaaa-4bbb-8ccc-ddddeeeeffff";
-const THREAD = "12345678-1234-4234-8234-123456789abc";
 
 function entry(name: string, extra: Partial<WorkspaceEntry> = {}): WorkspaceEntry {
   return {
@@ -140,7 +139,7 @@ test("primaryAction resumes the last thread in Code; a Codex-only vault's Claude
 });
 
 test("primaryAction: an old Sessions row is no last thread to resume (remove-sessions D5); no thread yet starts the first ready host; none ready says why", () => {
-  const app = entry("site", { sessions: sessions([row(ID1, { kind: "app", via: "app", thread: THREAD, resumable: false, reason: "A Sessions thread: open it in Sessions" })]) });
+  const app = entry("site", { sessions: sessions([row(ID1, { kind: "app", via: "app", resumable: false, reason: "A Sessions thread: open it in Sessions" })]) });
   const a = primaryAction(ctx(app).c, app);
   assert.equal(a.label, "Start in Code", "it ran headless, so it is not the work to pick up");
 

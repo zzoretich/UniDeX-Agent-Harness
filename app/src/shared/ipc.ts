@@ -100,15 +100,8 @@ export const CH = {
   /** main → page: the theme changed (the user's choice, or macOS's appearance while it is followed). */
   themeEvent: "theme:event",
 
-  // Sessions (UniDeX phase 2, spec 2026-10-07-unidex-sessions): main runs each turn of an agent session in a workspace;
-  // the page names a workspace, a host and a prompt, and reads the thread back as events.
-  sessionStart: "session:start",
-  sessionSend: "session:send",
-  sessionStop: "session:stop",
-  sessionRemove: "session:remove",
-  sessionList: "session:list",
-  sessionCatalog: "session:catalog",
-  sessionRead: "session:read",
+  /** Each host's models and commands, for Code's composer and Routines (remove-sessions D11), whichever surfaces are on. Invoke. */
+  hostsCatalog: "hosts:catalog",
   // The Code chat view (spec 2026-11-09-code-chat): main follows an agent terminal's transcript into a cache the page reads.
   codeFollow: "code:follow",
   codeUnfollow: "code:unfollow",
@@ -117,17 +110,11 @@ export const CH = {
   codeGit: "code:git",
   /** The composer's image (C7): the page sends a type and base64, main checks and saves it and names the path. Invoke. */
   codeSaveImage: "code:save-image",
-  /** main → page: one event of a running turn. */
-  sessionEvent: "session:event",
-  // The workspace's repository: what changed, a file's diff, and the commit the user asks for.
   proposalPreview: "proposal:preview",
   proposalApply: "proposal:apply",
   proposalReject: "proposal:reject",
   proposalUndos: "proposal:undos",
   proposalUndo: "proposal:undo",
-  gitStatus: "git:status",
-  gitDiff: "git:diff",
-  gitCommit: "git:commit",
 
   /**
    * main → page: the Computer pane (agent-computer D27, D32). `{ type: "state", state }` after a computer changes, and
@@ -172,7 +159,7 @@ export interface ComputerAsk {
 export interface ComputerLogLine { at: number; session: string; text: string }
 export type ComputerAnswer = "once" | "always" | "deny";
 export interface ComputerState {
-  /** The session this browser belongs to: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`) or `chat:<thread>` (session-browser S1). */
+  /** The session this browser belongs to: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`, session-browser S1). */
   session: string; label: string; tabs: ComputerTab[]; holder: ComputerHolder; asks: readonly ComputerAsk[]; log: readonly ComputerLogLine[];
   marked: boolean; poppedOut: boolean;
   /** session-browser S2: a browser starts off (no view, no process); "asleep" is first set by the idle sleep. */
@@ -317,7 +304,7 @@ export interface PersonaAnswers {
 }
 
 export interface InstallRequest {
-  /** none: no agent CLI yet (install-import B2); Sessions and the Chief of Staff wait until one is added. */
+  /** none: no agent CLI yet (install-import B2); Code's agents and the Chief of Staff wait until one is added. */
   host: "claude" | "codex" | "both" | "none";
   /** Absolute, or starting with ~/. */
   vault: string;
@@ -430,65 +417,8 @@ export interface AgentFlags { noDaemon: boolean; bin: string | null }
  *  carries; the page rebuilds the line from it and asks once more. */
 export type PtyAgentResult = Result<{ pid: number }> | { ok: false; error: string; code: "flags"; flags: AgentFlags };
 
-/** The hosts a session runs on. */
+/** The agent hosts (Claude Code and Codex): a Code terminal's agent, the catalog. */
 export type SessionHost = "claude" | "codex";
-
-/** What a turn may do (spec 2026-10-07-sessions-ux U7): read only, edit files, or edit and run commands. */
-export type SessionAccess = "read" | "edit" | "run";
-
-/**
- * One event of a thread: the runtime's lib/session-events.js shape (session, text, tool, tool_result, patch, plan, usage,
- * error, done), plus `prompt` (what the user sent, with the turn's model, effort and access) and `turn`, the turn it
- * belongs to. `computer` (with `text`) is a Computer pane line for the thread's timeline (agent-computer D35): sent live,
- * never stored in the thread's file.
- */
-export interface SessionEventRecord {
-  t: string;
-  kind: "prompt" | "session" | "text" | "tool" | "tool_result" | "patch" | "plan" | "usage" | "error" | "done" | "computer";
-  turn: number;
-  [field: string]: unknown;
-}
-
-/** A thread as the list shows it. */
-export interface SessionThread {
-  id: string;
-  workspace: string;
-  host: SessionHost;
-  /** The model, effort and access of its latest turn (the next one reuses them unless the page names others). */
-  model: string | null;
-  effort: string | null;
-  access: SessionAccess;
-  title: string;
-  created: string;
-  updated: string;
-  turns: number;
-  running: boolean;
-  /** What its turns cost so far (Codex's is an estimate). */
-  usd: number;
-}
-
-export interface SessionStartRequest {
-  /** The folder under <vault>/workspaces. */
-  workspace: string;
-  host: SessionHost;
-  text: string;
-  model?: string | null;
-  effort?: string | null;
-  /** Default edit. */
-  access?: SessionAccess;
-  /** Before access levels: true reads as access "run". */
-  allowCommands?: boolean;
-}
-
-/** The thread's next turn. A field left out reuses the thread's last; the host never changes (U6). */
-export interface SessionSendRequest {
-  thread: string;
-  text: string;
-  model?: string | null;
-  effort?: string | null;
-  access?: SessionAccess;
-  allowCommands?: boolean;
-}
 
 /** One model a host offers (the runtime's lib/host-catalog.js). `main`: current; the rest are older. */
 export interface CatalogModel { id: string; name: string; description: string; efforts: string[]; main: boolean }
@@ -511,10 +441,7 @@ export interface CatalogHost {
 
 export interface HostCatalog { schema: 1; fetchedAt: string; hosts: Partial<Record<SessionHost, CatalogHost>> }
 
-/** main → page: one event of a running turn of `thread`. */
-export interface SessionEvent { thread: string; event: SessionEventRecord }
-
-/** A workspace's repository: its branch and the files that differ from HEAD. */
+/** A workspace's repository: its branch and the files that differ from HEAD (the Code Diff pane, code-chat C8). */
 export interface GitStatus {
   repo: boolean;
   branch: string | null;
@@ -731,8 +658,8 @@ export interface AosBridge {
   };
   /**
    * The Computer pane's calls (agent-computer D5, D32), answered while the Computer surface is on. A browser is keyed
-   * by its session: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`) or `chat:<thread>` (session-browser S1). A call while the surface is off is refused
-   * (`select` answers null; `navigate` answers EPERM).
+   * by its session: `code:<the id of the terminal's first process>` (`TerminalSession.originPty`, session-browser S1). A call while the surface is off
+   * is refused (`select` answers null; `navigate` answers EPERM).
    */
   computer: {
     /** The pane shows this session's browser (null: none); its state, or null when refused. */
@@ -760,21 +687,10 @@ export interface AosBridge {
     move(from: string, to: string): Promise<boolean>;
     onEvent(cb: (ev: ComputerEvent) => void): () => void;
   };
-  /** Agent sessions in a workspace (spec 2026-10-07-unidex-sessions), run by main while the Sessions surface is on. */
-  sessions: {
-    /** Opens a thread and starts its first turn; events follow on onEvent. */
-    start(req: SessionStartRequest): Promise<Result<SessionThread>>;
-    /** The thread's next turn. */
-    send(req: SessionSendRequest): Promise<Result<SessionThread>>;
-    /** Stops the running turn (SIGTERM, then SIGKILL after 10 s). */
-    stop(thread: string): void;
-    /** Moves the thread's file to the Trash and forgets its browser; EBUSY while its turn runs. */
-    remove(thread: string): Promise<Result<null>>;
-    list(): Promise<Result<SessionThread[]>>;
-    read(thread: string): Promise<Result<SessionEventRecord[]>>;
+  /** What Code needs of the host CLIs (remove-sessions D11), answered whichever surfaces are on. */
+  hosts: {
     /** Each host's models and commands (cached by the runtime for a day; `refresh` asks the hosts again). */
     catalog(refresh?: boolean): Promise<Result<HostCatalog>>;
-    onEvent(cb: (ev: SessionEvent) => void): () => void;
   };
   /** The Code chat view's transcript mirror (spec 2026-11-09-code-chat), run by main while the Code chat surface is on, its
    *  Diff pane's read-only git, and its composer's images. */
@@ -800,11 +716,5 @@ export interface AosBridge {
     reject(name: string, digest: string, token: string): Promise<Result<unknown>>;
     undos(): Promise<Result<ProposalUndo[]>>;
     undo(undoId: string): Promise<Result<unknown>>;
-  };
-  /** A workspace's repository: read, and commit on the user's word. Nothing is pushed. */
-  git: {
-    status(workspace: string): Promise<Result<GitStatus>>;
-    diff(workspace: string, file?: string): Promise<Result<GitDiff>>;
-    commit(workspace: string, message: string): Promise<Result<{ commit: string }>>;
   };
 }

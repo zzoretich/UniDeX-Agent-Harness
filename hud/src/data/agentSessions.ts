@@ -7,7 +7,7 @@
 import type { AgenticosJson, ProviderState, SessionHost } from "./aosConfig";
 import { sessionHosts } from "./aosConfig";
 import { ago } from "./notifications";
-import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionAccess, HostSessionEvent, HostSessionThread } from "../host";
+import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionAccess, HostSessionEvent } from "../host";
 
 export const HOST_LABEL: Record<SessionHost, string> = { claude: "Claude Code", codex: "Codex" };
 /** What the composer says in place of Allow commands on a Codex thread (spec S5). */
@@ -18,29 +18,9 @@ export function workspaceNames(names: string[]): string[] {
   return names.filter((n) => !!n && !n.startsWith(".") && !n.startsWith("_")).sort((a, b) => a.localeCompare(b));
 }
 
-export interface ThreadGroup { workspace: string; threads: HostSessionThread[] }
-
-/** Threads by workspace, newest first within each, and the workspace with the newest thread first. */
-export function groupThreads(threads: HostSessionThread[]): ThreadGroup[] {
-  const newest = (a: HostSessionThread, b: HostSessionThread) => (a.updated < b.updated ? 1 : a.updated > b.updated ? -1 : 0);
-  const by = new Map<string, HostSessionThread[]>();
-  for (const t of [...threads].sort(newest)) {
-    const list = by.get(t.workspace) ?? [];
-    list.push(t);
-    by.set(t.workspace, list);
-  }
-  return [...by.entries()].map(([workspace, list]) => ({ workspace, threads: list }));
-}
-
 /** Dollars as the HUD shows them: four places under a cent, else two. */
 export function usdText(usd: number): string {
   return `$${usd > 0 && usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2)}`;
-}
-
-/** A thread's line under its title in the list: turns and spend (Codex's is an estimate). */
-export function threadMeta(t: HostSessionThread): string {
-  const turns = `${t.turns} turn${t.turns === 1 ? "" : "s"}`;
-  return t.usd > 0 ? `${turns} · ${t.host === "codex" ? "≈" : ""}${usdText(t.usd)}` : turns;
 }
 
 export interface ToolCall { name: string; toolKind: string; filePath: string | null; summary: string }
@@ -438,35 +418,7 @@ export function fileCounts(st: HostGitStatus | null, path: string, root?: string
   return f ? { added: f.added, removed: f.removed } : null;
 }
 
-// ── the list (spec 2026-10-07-sessions-ux U1: New session, Vault, then each workspace folder with its threads) ──
-
-/** A thread's age in the list, as short as it fits: now, 12m, 3h, 2d, then the date. */
-export function threadAge(iso: string, now: Date): string {
-  const text = ago(iso, now);
-  return text === "just now" ? "now" : text.replace(/ ago$/, "");
-}
-
-/**
- * Today's session spend from the spend ledger's text (brain/_index/provider-spend.jsonl): the `session:*` rows of the
- * local day of `now`, as the runtime's sessionSpendToday sums them against sessions.perDayUsd. Torn lines are skipped.
- */
-export function sessionSpendToday(ledger: string, now: Date): number {
-  const day = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-  const today = day(now);
-  let sum = 0;
-  for (const line of ledger.split("\n")) {
-    if (!line.includes("\"session:")) continue;
-    let r: Record<string, unknown>;
-    try { r = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-    if (!r || !str(r.feature).startsWith("session:")) continue;
-    const t = new Date(str(r.ts));
-    if (Number.isNaN(t.getTime()) || day(t) !== today) continue;
-    sum += num(r.usd) ?? 0;
-  }
-  return Math.round(sum * 1e6) / 1e6;
-}
-
-/** The list's spend footer, `$1.84 of $10`, and how much of the day's cap that is (0 to 1; a cap of 0 is full). */
+/** A spend footer, `$1.84 of $10`, and how much of the day's cap that is (0 to 1; a cap of 0 is full). */
 export function spendLine(spent: number, cap: number): { text: string; ratio: number } {
   const capText = Number.isInteger(cap) ? `$${cap}` : usdText(cap);
   return { text: `${usdText(spent)} of ${capText}`, ratio: cap > 0 ? Math.min(1, Math.max(0, spent / cap)) : 1 };

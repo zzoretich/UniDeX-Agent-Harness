@@ -35,7 +35,7 @@ export interface ScopeOptions {
   identity?: (p: string) => FolderId | null;
 }
 
-/** Program names whose existence may be probed anywhere (nodeResolver, claudeAsk, the shell picker). */
+/** Program names whose existence may be probed anywhere (nodeResolver, the hosts check, the shell picker). */
 export const PROGRAM_NAMES = new Set(["node", "npm", "npx", "claude", "codex", "zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh"]);
 
 /** Basenames never read: the hosts' credential stores, and the usual secret files. */

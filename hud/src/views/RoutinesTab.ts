@@ -14,7 +14,7 @@ import {
   SMALL_MODEL_NOTE, WRITES_NOTE, defaultEngine, dropPromptOnly, engineChoices, enginePill, modelChoices, parseWrites, writesText,
 } from "../data/routineEngines";
 import { aliasCatalog } from "../data/agentSessions";
-import { sessionsHost, type HostCatalog } from "../host";
+import { hostsHost, type HostCatalog } from "../host";
 import { adapterOf, writeRoutine, setRoutineEnabled, deleteRoutine, isGuardedChange, GuardedRoutineError, RoutineDraft } from "../data/routineWriter";
 import { readExternalSchedules, ExternalSchedule } from "../data/externalSchedules";
 import { readHostRoutines, hostRows, hostChip, codexRefreshDue, emptyHostRoutines, HostRoutinesCache, HOST_ROUTINES_PATH, HOST_NAMES } from "../data/hostRoutines";
@@ -253,7 +253,7 @@ export class RoutinesTab {
     if (!this.catalogRun) {
       this.catalogRun = (async () => {
         let cat: HostCatalog | null = null;
-        try { const sh = sessionsHost(); const r = sh ? await sh.sessions.catalog() : null; if (r && r.ok) cat = r.data; } catch { /* the aliases */ }
+        try { const hh = hostsHost(); const r = hh ? await hh.catalog() : null; if (r && r.ok) cat = r.data; } catch { /* the aliases */ }
         this.catalog = cat ?? aliasCatalog(new Date());
       })();
     }

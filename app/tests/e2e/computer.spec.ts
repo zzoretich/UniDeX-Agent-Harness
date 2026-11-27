@@ -112,7 +112,7 @@ function prepare(hosts: { claude: boolean; codex: boolean }): void {
 
 type Host = "claude" | "codex";
 type Access = "read" | "edit" | "run";
-const NOT_STARTED = "Not started by UniDeX: start this session from the Code page's New menu or a Chat thread.";
+const NOT_STARTED = "Not started by UniDeX: start this session from the Code page's New menu.";
 
 const pane = (win: Page, page: "code"): Locator => content(win).locator(`.aos-cp[data-page="${page}"]`);
 const cards = (p: Locator) => p.locator(".aos-cp-ask");
@@ -265,7 +265,7 @@ const notices = (app: ElectronApplication) => app.evaluate(() => (globalThis as 
 test.describe("both hosts, the Computer surface on", () => {
   // The start page and its search are the fixture site's (the test seam AOS_E2E_START_PAGE), once it has its port: this
   // hook runs before useApp's launch.
-  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer", ...computerEnv() };
   test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
   test.afterAll(async () => { await site?.close(); });
   const app = useApp({
@@ -1186,7 +1186,7 @@ test.describe("both hosts, the Computer surface on", () => {
 // ── one browser per session, off until the user turns it on ──────────
 
 test.describe("session browser: one per session, off until the user turns it on (session-browser §6, PR 3)", () => {
-  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer", ...computerEnv() };
   test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
   test.afterAll(async () => { await site?.close(); });
   const app = useApp({
@@ -1373,7 +1373,7 @@ test.describe("session browser: one per session, off until the user turns it on 
 // ── the four tools of the thirteen: computer_tab, computer_nav, computer_hover, computer_console, and a double click ───
 
 test.describe("session browser: tab, nav, hover and console, on both hosts (session-browser S16, S17)", () => {
-  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer", ...computerEnv() };
   test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
   test.afterAll(async () => { await site?.close(); });
   const app = useApp({
@@ -1588,7 +1588,7 @@ test.describe("session browser: tab, nav, hover and console, on both hosts (sess
 // ── limited, popped out and asking from off screen ───────────────────
 
 test.describe("session browser: limited, popped out and asking from off screen (session-browser §6, PR 3)", () => {
-  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer", ...computerEnv() };
   test.beforeAll(async () => { site = await startSite(); env.AOS_E2E_START_PAGE = startUrl(); });
   test.afterAll(async () => { await site?.close(); });
   const app = useApp({
@@ -1691,7 +1691,7 @@ test.describe("session browser: limited, popped out and asking from off screen (
 // ── the Computer surface off (the default) ───────────────────────────
 
 test.describe("the Computer surface off (a run whose AOS_APP_WRITE leaves it out)", () => {
-  const app = useApp({ env: { AOS_APP_WRITE: "sessions", ...computerEnv() }, prepare: () => prepare({ claude: true, codex: false }) });
+  const app = useApp({ env: { AOS_APP_WRITE: "", ...computerEnv() }, prepare: () => prepare({ claude: true, codex: false }) });
 
   test("the pane is only its collapsed strip on Code, whatever it shows (R54)", async () => {
     const h = app();
@@ -1728,7 +1728,7 @@ test.describe("the Computer surface off (a run whose AOS_APP_WRITE leaves it out
 test.describe("a Codex-only machine, the Computer surface on", () => {
   test.beforeAll(async () => { site = await startSite(); });
   test.afterAll(async () => { await site?.close(); });
-  const app = useApp({ env: { AOS_APP_WRITE: "computer,sessions", ...computerEnv() }, prepare: () => prepare({ claude: false, codex: true }) });
+  const app = useApp({ env: { AOS_APP_WRITE: "computer", ...computerEnv() }, prepare: () => prepare({ claude: false, codex: true }) });
 
   test("a Codex terminal's ask shows its card in the pane and badges Code, as on Claude Code (D27, D33)", async () => {
     const h = app();
@@ -1761,7 +1761,7 @@ test.describe("session browser: pages a program opens, and Open in my browser (s
   // Made in beforeAll, so a worker that never runs this describe leaves no folder behind.
   let rec = "", recorder = "", recorded = "";
   const fell = (): string[] => (fs.existsSync(recorded) ? fs.readFileSync(recorded, "utf8").split("\n").filter(Boolean) : []);
-  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer", ...computerEnv() };
   test.beforeAll(async () => {
     site = await startSite();
     env.AOS_E2E_START_PAGE = startUrl();
@@ -1982,7 +1982,7 @@ test.describe("session browser: with the Computer setting off a program's page g
   // one address and that main opened nothing outside.
   let rec = "", recorded = "";
   const fell = (): string[] => (fs.existsSync(recorded) ? fs.readFileSync(recorded, "utf8").split("\n").filter(Boolean) : []);
-  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer,sessions", ...computerEnv() };
+  const env: Record<string, string | undefined> = { AOS_APP_WRITE: "computer", ...computerEnv() };
   test.beforeAll(async () => {
     site = await startSite();
     rec = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "aos-bro-"));
@@ -2023,6 +2023,34 @@ test.describe("session browser: with the Computer setting off a program's page g
     await expect(p.locator(".aos-cp-tab")).toHaveCount(0);
     expect((await externalOf(h)).length, "main opened nothing outside").toBe(externalBefore);
     expect((await h.opened()).filter((o) => o.fn === "openExternal")).toEqual([]);
+    expectNoErrors(h);
+  });
+});
+
+// ── a browser record left from Sessions (remove-sessions D8) ─────────
+
+test.describe("a browser record left from Sessions (remove-sessions D8)", () => {
+  const thread = "chat:0b7c6f0e-3d2a-4c1b-9e8f-1a2b3c4d5e6f";
+  const file = path.join(USER_DATA, "computer", "browsers.json");
+  const saved = (): Record<string, unknown> => (JSON.parse(fs.readFileSync(file, "utf8")) as { browsers: Record<string, unknown> }).browsers;
+  const app = useApp({
+    env: { AOS_APP_WRITE: "computer", ...computerEnv() },
+    prepare: () => {
+      prepare({ claude: true, codex: true });
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const at = Date.now();
+      fs.writeFileSync(file, `${JSON.stringify({ schema: 1, browsers: {
+        [thread]: { on: true, tabs: ["https://example.com/"], active: 0, at },
+        "code:4242": { on: false, tabs: ["https://example.org/"], active: 0, conversation: { host: "claude", id: "kept-conversation" }, at },
+      } }, null, 2)}\n`);
+    },
+  });
+
+  test("D8: an app whose browsers.json still holds a chat:<uuid> record from Sessions starts, raises no main-process error, and drops the record", async () => {
+    const h = app();
+    await expect.poll(() => Object.keys(saved()).includes(thread), { message: "the thread's record is dropped at boot" }).toBe(false);
+    expect(Object.keys(saved()).some((k) => k.startsWith("orphan:")), "a Code record stays, kept by its conversation").toBe(true);
+    await expect(rail(h.win, "term")).toBeVisible();
     expectNoErrors(h);
   });
 });

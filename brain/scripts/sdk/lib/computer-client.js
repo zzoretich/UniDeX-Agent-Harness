@@ -16,7 +16,7 @@
  * nine tools it had before the list existed, and a double click needs a list (an older app would click once).
  */
 
-const NO_APP = 'The UniDeX browser is not reachable because this session was not started from the UniDeX app: use another browser tool, or ask the user to start the session from UniDeX\'s Code page or a Chat thread.';
+const NO_APP = 'The UniDeX browser is not reachable because this session was not started from the UniDeX app: use another browser tool, or ask the user to start the session from UniDeX\'s Code page.';
 // The app's marker says the UniDeX browser is turned off for this run of the app (agent-computer D26): a run whose write
 // surfaces leave it out, so no bridge listens, by design. (The person's own switch, computer.enabled, answers from the bridge itself.)
 const OFF = 'The UniDeX browser is turned off in Settings for this run of the app: use another browser tool, or ask the user to turn the Computer pane on and restart UniDeX.';

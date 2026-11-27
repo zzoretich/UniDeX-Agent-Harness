@@ -3,7 +3,7 @@
 // an event object. Main checks every call's sender and arguments; this file only carries them.
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import { CH, type AosBridge, type BootInfo, type ComputerEvent, type ComputerState, type ProcEvent, type ProtocolRequest, type PtyEvent, type Result, type SessionEvent, type SetupEvent, type ThemeState, type UpdateState } from "../shared/ipc";
+import { CH, type AosBridge, type BootInfo, type ComputerEvent, type ComputerState, type ProcEvent, type ProtocolRequest, type PtyEvent, type Result, type SetupEvent, type ThemeState, type UpdateState } from "../shared/ipc";
 
 /** What the page sees when main does not answer an update query: updates off. */
 const OFF: UpdateState = { status: "off", reason: "no answer from the app", version: null, percent: null, error: null };
@@ -116,15 +116,8 @@ const api: AosBridge = {
     move: (from, to) => (ipcRenderer.invoke(CH.computerMove, { from, to }) as Promise<Result<boolean>>).then((r) => r.ok && r.data === true),
     onEvent: (cb) => listen<ComputerEvent>(CH.computerEvent, cb),
   },
-  sessions: {
-    start: (req) => invoke(CH.sessionStart, req),
-    send: (req) => invoke(CH.sessionSend, req),
-    stop: (thread) => ipcRenderer.send(CH.sessionStop, { thread }),
-    remove: (thread) => invoke(CH.sessionRemove, { thread }),
-    list: () => invoke(CH.sessionList, {}),
-    read: (thread) => invoke(CH.sessionRead, { thread }),
-    catalog: (refresh) => invoke(CH.sessionCatalog, refresh ? { refresh: true } : {}),
-    onEvent: (cb) => listen<SessionEvent>(CH.sessionEvent, cb),
+  hosts: {
+    catalog: (refresh) => invoke(CH.hostsCatalog, refresh ? { refresh: true } : {}),
   },
   code: {
     follow: (req) => invoke(CH.codeFollow, req),
@@ -139,11 +132,6 @@ const api: AosBridge = {
     reject: (name, digest, token) => invoke(CH.proposalReject, { name, digest, token }),
     undos: () => invoke(CH.proposalUndos, {}),
     undo: (undoId) => invoke(CH.proposalUndo, { undoId }),
-  },
-  git: {
-    status: (workspace) => invoke(CH.gitStatus, { workspace }),
-    diff: (workspace, file) => invoke(CH.gitDiff, file === undefined ? { workspace } : { workspace, file }),
-    commit: (workspace, message) => invoke(CH.gitCommit, { workspace, message }),
   },
 };
 

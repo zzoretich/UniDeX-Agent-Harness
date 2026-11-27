@@ -118,13 +118,13 @@ test("write surfaces: every verified surface by default; AOS_APP_WRITE narrows o
   // agent teams since its live check on each host (agent-workspace D14, 2026-11-25).
   assert.deepEqual(SURFACES.filter((s) => !s.verified).map((s) => s.id).sort(), ["hosts"]);
   assert.ok(verified.length > 0 && verified.length === SURFACES.length - 1);
-  assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "todo,chat" }), { surfaces: ["todo", "chat"], source: "AOS_APP_WRITE" });
+  assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "todo,notifications" }), { surfaces: ["todo", "notifications"], source: "AOS_APP_WRITE" });
   assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "" }), { surfaces: [], source: "AOS_APP_WRITE" });
   // A surface not verified yet (a new one starts this way) stays off by default; AOS_APP_WRITE can still turn it on
   // for its own tests.
-  const fresh = SURFACES.map((s) => (s.id === "chat" ? { ...s, verified: false } : s));
-  assert.deepEqual(loadWriteSettings({}, fresh).surfaces, verified.filter((id) => id !== "chat"));
-  assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "chat" }, fresh).surfaces, ["chat"]);
+  const fresh = SURFACES.map((s) => (s.id === "todo" ? { ...s, verified: false } : s));
+  assert.deepEqual(loadWriteSettings({}, fresh).surfaces, verified.filter((id) => id !== "todo"));
+  assert.deepEqual(loadWriteSettings({ AOS_APP_WRITE: "todo" }, fresh).surfaces, ["todo"]);
 });
 
 test("compat's write guard answers canWrite beside canSave, so the HUD can show why a button's writes are off (spaces-redesign D35)", () => {

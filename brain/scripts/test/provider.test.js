@@ -698,12 +698,12 @@ const aiCfg = (ai, extra = {}) => fs.writeFileSync(CONFIG, JSON.stringify({ prov
 test('ai.<feature> local (the default): the reasoner feature answers on the local engine, never a host, even signed in', async () => {
   aiCfg({});
   const calls = [];
-  for (const feature of ['reason:chat', 'reason:ask', 'reason:reflect-week', 'reason:consolidate-memory']) {
+  for (const feature of ['reason:ask', 'reason:reflect-week', 'reason:consolidate-memory']) {
     const p = await resolveProviderForRole({ role: 'reasoner', feature, deps: { ...pulled('qwen3.5:9b'), ...loggedIn, claudeCall: never, ollamaChat: async (o) => { calls.push(o); return 'local answer'; }, recordLocalCall: () => {} } });
     assert.deepEqual([p.name, p.reason, p.model], ['ollama', 'local-ready', 'qwen3.5:9b'], feature);
     assert.equal(await p.chat({ prompt: 'x', feature }), 'local answer');
   }
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 3);
   assert.equal(fs.existsSync(SPEND_PATH), false, 'nothing spent');
   // The state's name and reason keep describing the global provider: only the local cache moved.
   const st = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
@@ -721,15 +721,15 @@ test('ai.<feature> local with the engine down: none with the local reason, even 
 });
 
 test('ai.<feature> host: the hosted reasoner as before; a named host always wins; other features and providers ignore ai.*', async () => {
-  aiCfg({ chat: 'host', ask: 'local' });
+  aiCfg({ reflectWeek: 'host', ask: 'local' });
   const calls = [];
   const fake = async (o) => { calls.push(o); return { text: 'hosted', structured: null, usd: 0.01, usage: {}, ms: 1 }; };
-  let p = await resolveProviderForRole({ role: 'reasoner', feature: 'reason:chat', deps: { ...loggedIn, localModels: never, claudeCall: fake } });
+  let p = await resolveProviderForRole({ role: 'reasoner', feature: 'reason:reflect-week', deps: { ...loggedIn, localModels: never, claudeCall: fake } });
   assert.deepEqual([p.name, p.reason, p.model], ['claude', 'role:reasoner', 'claude-opus-5']);
   // ask is local, but Run once on Claude names the host.
   p = await resolveProviderForRole({ role: 'reasoner', feature: 'reason:ask', prefer: 'claude', deps: { ...loggedIn, localModels: never, claudeCall: fake } });
   assert.equal(p.name, 'claude');
-  // A feature with no switch (the memory sweep's own seam, Vault chat's claude -p ledger rows) takes the hosted reasoner.
+  // A feature with no switch (the memory sweep's own seam) takes the hosted reasoner.
   p = await resolveProviderForRole({ role: 'reasoner', feature: 'reason:unknown', deps: { ...loggedIn, localModels: never, claudeCall: fake } });
   assert.equal(p.name, 'claude');
   // Another provider ignores ai.*: an install that kept auto keeps the hosted reasoner (local-first A9).
@@ -742,12 +742,12 @@ test('ai.<feature> host: the hosted reasoner as before; a named host always wins
   assert.deepEqual([p.name, p.reason], ['none', 'forced']);
 });
 
-test('getProviderForRole memoizes per AI feature: ai.chat and ai.ask may differ in one process', async () => {
-  aiCfg({ chat: 'local', ask: 'host' });
-  const a = getProviderForRole('reasoner', 'reason:chat');
+test('getProviderForRole memoizes per AI feature: ai.reflectWeek and ai.ask may differ in one process', async () => {
+  aiCfg({ reflectWeek: 'local', ask: 'host' });
+  const a = getProviderForRole('reasoner', 'reason:reflect-week');
   const b = getProviderForRole('reasoner', 'reason:ask');
   assert.notEqual(a, b);
-  assert.equal(getProviderForRole('reasoner', 'reason:chat'), a);
+  assert.equal(getProviderForRole('reasoner', 'reason:reflect-week'), a);
   await Promise.allSettled([a, b]);
 });
 

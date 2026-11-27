@@ -116,8 +116,8 @@ test('local-first --apply --chief: both files go local, the CoS models land, tic
   assert.equal(r.state, 'applied');
   const u = w.user();
   const vc = w.vcfg();
-  assert.deepEqual([u.provider, u.ai], ['local', { chat: 'local', ask: 'local', reflectWeek: 'local', consolidate: 'local' }]);
-  assert.deepEqual([vc.provider, vc.ai], ['local', { chat: 'local', ask: 'local', reflectWeek: 'local', consolidate: 'local' }]);
+  assert.deepEqual([u.provider, u.ai], ['local', { ask: 'local', reflectWeek: 'local', consolidate: 'local' }]);
+  assert.deepEqual([vc.provider, vc.ai], ['local', { ask: 'local', reflectWeek: 'local', consolidate: 'local' }]);
   assert.deepEqual([vc.persona.model, vc.persona.codexModel, vc.persona.failover], [CHIEF.claude, CHIEF.codex, true], 'A4: the models and the failover move together');
   assert.deepEqual([vc.persona.runner, vc.persona.perDayUsd], ['auto', 6], 'the rest of persona is kept');
   assert.equal(u.persona.model, undefined, 'agenticos.json named no CoS model, so brain/config.json carries it');
@@ -131,7 +131,7 @@ test('local-first --apply --chief: both files go local, the CoS models land, tic
   assert.match(r.backup, /^brain\/_index\/migrations\/local-first-2026-10-15T12-00-00-000Z\.json$/);
   const b = JSON.parse(w.read(r.backup));
   assert.deepEqual(b.files.user, {
-    provider: { had: true, value: 'auto', set: 'local' }, 'ai.chat': { had: false, set: 'local' }, 'ai.ask': { had: false, set: 'local' },
+    provider: { had: true, value: 'auto', set: 'local' }, 'ai.ask': { had: false, set: 'local' },
     'ai.reflectWeek': { had: false, set: 'local' }, 'ai.consolidate': { had: false, set: 'local' },
   });
   assert.deepEqual(b.files.vault['persona.model'], { had: true, value: null, set: CHIEF.claude });
@@ -367,11 +367,11 @@ test('undo restores only what still holds the value apply set; a later change is
   const w = world();
   const ctx = M.resolveCtx(w.opts);
   M.applyLocalFirst(ctx, { chief: true }, w.opts);
-  fs.writeFileSync(path.join(w.v, 'brain', 'config.json'), JSON.stringify({ ...w.vcfg(), ai: { ...w.vcfg().ai, chat: 'host' } }));
+  fs.writeFileSync(path.join(w.v, 'brain', 'config.json'), JSON.stringify({ ...w.vcfg(), ai: { ...w.vcfg().ai, ask: 'host' } }));
   const u = M.undoLocalFirst(ctx, w.opts);
-  assert.equal(w.vcfg().ai.chat, 'host', 'the later choice stays');
+  assert.equal(w.vcfg().ai.ask, 'host', 'the later choice stays');
   assert.equal(w.vcfg().provider, 'auto');
-  assert.deepEqual(u.kept, ['brain/config.json ai.chat (changed since going local)']);
+  assert.deepEqual(u.kept, ['brain/config.json ai.ask (changed since going local)']);
 });
 
 test('a failed import is not recorded as applied, through aos migrate or a plain aos import', async () => {

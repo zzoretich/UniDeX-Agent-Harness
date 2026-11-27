@@ -31,8 +31,8 @@ export function renderHistory(host: HTMLElement, ctx: SpacesCtx, e: WorkspaceEnt
 
 function renderItem(list: HTMLElement, ctx: SpacesCtx, e: WorkspaceEntry, it: HistoryItem, said: Set<string>): void {
   const s = it.session;
-  const isTarget = !!ctx.ui.target.thread && !!s && (s.thread === ctx.ui.target.thread || s.id === ctx.ui.target.thread);
-  // The thread a link pointed at (D12): marked for assistive technology and in words, not by its tint alone.
+  const isTarget = !!ctx.ui.target.thread && !!s && s.id === ctx.ui.target.thread;
+  // The session a link pointed at (D12): marked for assistive technology and in words, not by its tint alone.
   const row = list.createDiv({ cls: `aos-spc-hrow is-${it.kind}${isTarget ? " is-target" : ""}`, attr: isTarget ? { "aria-current": "true" } : {} });
   if (it.kind === "session" && it.host) hostDot(row, it.host);
   else dot(row, "commit", "Commit", { cls: "aos-spc-commitmark" });

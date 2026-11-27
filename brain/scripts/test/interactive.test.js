@@ -175,12 +175,7 @@ const runIn = (v, script, args) => new Promise((resolve) => {
     { encoding: 'utf8', env: { ...ENV, BRAIN_VAULT: v, AOS_VAULT: v } }, (err, stdout, stderr) => resolve({ status: err ? err.code : 0, stdout, stderr }));
 });
 
-test('ask --chat is a flag of its own, never part of the question', () => {
-  const { askOptions } = require('../sdk/ask.js');
-  assert.deepEqual(askOptions(['--local', '--chat', 'what is due?']), { opts: { chat: true }, rest: ['--local', 'what is due?'] });
-});
-
-test('ask --local --chat under provider local: the local engine answers (reason:chat, counted not ledgered); down, it says so and how to run once on a host', async () => {
+test('ask --local under provider local: the local engine answers (reason:ask, counted not ledgered); down, it says so and how to run once on a host', async () => {
   const http = require('http');
   const seen = [];
   const server = http.createServer((req, res) => {
@@ -196,18 +191,18 @@ test('ask --local --chat under provider local: the local engine answers (reason:
   await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
   const up = localVault({ url: `http://127.0.0.1:${server.address().port}` });
   try {
-    const r = await runIn(up, 'ask.js', ['--local', '--chat', 'how does routing work?']);
+    const r = await runIn(up, 'ask.js', ['--local', 'how does routing work?']);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /cheapest tier/);
     assert.equal(seen[0].model, 'qwen3.5:9b', 'the workhorse, never the reasoner\'s Claude id');
     const usage = JSON.parse(fs.readFileSync(path.join(up, 'brain', '_index', 'local-usage.json'), 'utf8'));
-    assert.ok(JSON.stringify(usage).includes('reason:chat'), 'a reason:chat local call');
+    assert.ok(JSON.stringify(usage).includes('reason:ask'), 'a reason:ask local call');
     assert.equal(fs.existsSync(path.join(up, 'brain', '_index', 'provider-spend.jsonl')), false, 'no spend row');
   } finally {
     server.close();
   }
   const down = localVault({ url: 'http://127.0.0.1:9' });
-  const r = await runIn(down, 'ask.js', ['--local', '--chat', 'anything']);
+  const r = await runIn(down, 'ask.js', ['--local', 'anything']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /the local model cannot answer \(local-down\): start Ollama/);
   assert.match(r.stderr, /--host=claude or --host=codex/);

@@ -214,35 +214,6 @@ const COMMANDS: Record<string, { ok: Array<[string, string[]]>; no: Array<[strin
       [NODE, [`${S}/team.js`, "new", "Field", "--name", "Field", "--lead", "dev-writer"]],
       [NODE, [`${S}/team.js`, "new", "field", "--name", "Field", "--lead", "dev-writer", "--parent", "Dev"]]],
   },
-  chat: {
-    ok: [[NODE, [`${S}/sdk/recall-cli.js`, "where are the tide notes?"]],
-      // One leading dash is text to both scripts, as in Obsidian: a question typed as a bullet.
-      [NODE, [`${S}/sdk/recall-cli.js`, "- what is due?"]], [NODE, [`${S}/sdk/ask.js`, "--local", "-v means verbose?"]],
-      ["/opt/me/.local/bin/claude", ["-p", "QUESTION: hi", "--model", "sonnet", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", "You answer.", "--max-budget-usd", "0.25", "--output-format", "json"]],
-      ["claude", ["-p", "QUESTION: hi", "--model", "sonnet", "--effort", "high", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", "You answer.", "--max-budget-usd", "0.25", "--output-format", "json"]],
-      // Vault's chosen host, model and effort (spec 2026-10-07-sessions-ux U9): Claude's five levels; ask.js one argument each.
-      ["claude", ["-p", "QUESTION: hi", "--model", "opus", "--effort", "max", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", "You answer.", "--max-budget-usd", "0.25", "--output-format", "json"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "what is due?"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--model=gpt-6-luna", "what is due?"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--model=gpt-6-luna", "--effort=xhigh", "what is due?"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--effort=low", "- what is due?"]],
-      // A Vault question under provider local (local-first A2): --chat, then the question.
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--chat", "what is due?"]]],
-    no: [["claude", ["-p", "hi"]], ["claude", ["-p", "QUESTION: hi", "--model", "sonnet", "--tools", "Bash", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", "x", "--max-budget-usd", "0.25", "--output-format", "json"]],
-      ["claude", ["-p", "QUESTION: hi", "--model", "sonnet", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", "x", "--max-budget-usd", "0.25", "--output-format", "json", "--dangerously-skip-permissions"]],
-      [NODE, [`${S}/sdk/ask.js`, "hi"]], [NODE, [`${S}/sdk/recall-cli.js`, "--dump"]],
-      // Whole `--…` arguments are the scripts' flags: a rebuild, or ask.js printing a file as its answer.
-      [NODE, [`${S}/sdk/recall-cli.js`, "--warm"]], [NODE, [`${S}/sdk/ask.js`, "--local", "--write=/etc/hosts"]], [NODE, [`${S}/sdk/ask.js`, "--local", ""]],
-      [NODE, [`${S}/sdk/recall-cli.js`, "tides", "--limit", "50"]],
-      // A host that is not one, a model that reads as a flag, a level ask.js's Codex path does not take, a model with no host.
-      ["claude", ["-p", "QUESTION: hi", "--model", "opus", "--effort", "ultra", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", "x", "--max-budget-usd", "0.25", "--output-format", "json"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=ollama", "hi"]], [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--model=-x", "hi"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--effort=ultra", "hi"]], [NODE, [`${S}/sdk/ask.js`, "--local", "--model=gpt-6-luna", "hi"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--host=codex", "--effort=low", "--model=gpt-6-luna", "hi"]],
-      // --chat only with no host, and only in its place.
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--chat", "--host=codex", "hi"]], [NODE, [`${S}/sdk/ask.js`, "--chat", "--local", "hi"]],
-      [NODE, [`${S}/sdk/ask.js`, "--local", "--chat", "--write=/etc/hosts"]]],
-  },
 };
 
 test("each surface's commands run only while it is on; its look-alikes never", () => {
@@ -702,12 +673,13 @@ test("the Go local surface also runs the Import sheet: its dry run, migrate impo
 });
 
 test("a relative script runs only against the vault it resolves into", () => {
-  const p = new WritePolicy(VAULT, ["chat"]);
-  assert.equal(p.canSpawn(NODE, ["brain/scripts/sdk/ask.js", "--local", "hi"], VAULT), true, "askSpawner: relative, cwd = the vault");
-  assert.equal(p.canSpawn(NODE, ["brain/scripts/sdk/ask.js", "--local", "hi"]), false, "no cwd");
-  assert.equal(p.canSpawn(NODE, ["brain/scripts/sdk/ask.js", "--local", "hi"], "/elsewhere"), false);
-  assert.equal(p.canSpawn(NODE, ["../brain/scripts/sdk/ask.js", "--local", "hi"], `${VAULT}/persona`), true, "resolves into this vault");
-  assert.equal(p.canSpawn(NODE, ["brain/scripts/sdk/ask.js", "--local", "hi"], "relative/cwd"), false);
+  const p = new WritePolicy(VAULT, ["routines"]);
+  const run = ["brain/scripts/routines/run-routine.js", "daily-brief", "--manual"];
+  assert.equal(p.canSpawn(NODE, run, VAULT), true, "relative, cwd = the vault");
+  assert.equal(p.canSpawn(NODE, run), false, "no cwd");
+  assert.equal(p.canSpawn(NODE, run, "/elsewhere"), false);
+  assert.equal(p.canSpawn(NODE, ["../brain/scripts/routines/run-routine.js", "daily-brief", "--manual"], `${VAULT}/persona`), true, "resolves into this vault");
+  assert.equal(p.canSpawn(NODE, run, "relative/cwd"), false);
 });
 
 test("settings may create the live-runs folder and summary log, and nothing else under agent-runs", () => {

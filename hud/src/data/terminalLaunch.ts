@@ -273,7 +273,7 @@ export interface TermHostChoice {
   bin: string | null;
 }
 
-/** The hosts a launch may use: the agents as the Sessions tab sees them (aos config + login cache), and the shell. */
+/** The hosts a launch may use: the agents as aos config and the login cache see them, and the shell. */
 export function termHostChoices(cfg: AgenticosJson | null, state: ProviderState | null): TermHostChoice[] {
   const enabled = sessionHosts(cfg);
   const agents = hostChoices(cfg, state).map((c): TermHostChoice => {

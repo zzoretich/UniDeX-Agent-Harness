@@ -29,7 +29,7 @@ export interface AgenticosJson {
   reasoner?: { model?: string; perCallUsd?: number; perDayUsd?: number; effort?: string };
   ollama?: { host?: string; port?: number };
   local?: { engine?: "ollama" | "openai"; url?: string | null; model?: string | null; embedder?: string; keepAlive?: string | number | null; hostedFallback?: boolean; onBattery?: "defer" | "run" };
-  ai?: { chat?: AiEngine; ask?: AiEngine; reflectWeek?: AiEngine; consolidate?: AiEngine };
+  ai?: { ask?: AiEngine; reflectWeek?: AiEngine; consolidate?: AiEngine };
   telemetry?: { enabled?: boolean; redact?: boolean; retentionDays?: number; staleAfterMinutes?: number };
   updates?: { check?: boolean; intervalHours?: number };
   computer?: { enabled?: boolean; askTimeoutSec?: number; awake?: number };
@@ -58,7 +58,7 @@ export interface VaultConfig {
   // local-first A11: the local engine every background call runs on. model null = the Mac's RAM tier; keepAlive null = tiered.
   local: { engine: "ollama" | "openai"; url: string | null; model: string | null; embedder: string; keepAlive: string | number | null; hostedFallback: boolean; onBattery: "defer" | "run" };
   // local-first A2: where each reasoner feature runs under provider local (local engine or a host).
-  ai: { chat: AiEngine; ask: AiEngine; reflectWeek: AiEngine; consolidate: AiEngine };
+  ai: { ask: AiEngine; reflectWeek: AiEngine; consolidate: AiEngine };
   telemetry: { enabled: boolean; redact: boolean; retentionDays: number; staleAfterMinutes: number };
   updates: { check: boolean; intervalHours: number };
   computer: { enabled: boolean; askTimeoutSec: number; awake: number };
@@ -71,8 +71,6 @@ export interface VaultConfig {
   routines: { enabled: boolean; runner: "auto" | "claude" | "codex"; codexModel: string | null; perRunUsd: number; perDayUsd: number; tools: string; externalLabels: string[] };
   // Cross-review and handoff (spec 2026-09-23-cross-review D8): the HUD does not read these yet; mirrored so the defaults stay whole.
   crossReview: { enabled: boolean; claudeModel: string | null; codexModel: string | null; effort: string | null; perCallUsd: number; perDayUsd: number; timeoutSec: number; rounds: number };
-  // Sessions (spec 2026-10-07-unidex-sessions S6): what a turn and a day of agent sessions may spend.
-  sessions: { perTurnUsd: number; perDayUsd: number };
   // Spaces (spec 2026-10-09-spaces-redesign D30): the scan works these out; the HUD reads the results in snapshot.json.
   workspaces: { activeDays: number; idleDays: number; commits: number; recentSessions: number; ignoreCommitSubjects: string[]; attributeByFiles: boolean };
   memory: { usageDays: number; neverUsedDays: number; dupScore: number; clusterMin: number; mapMin: number };
@@ -121,7 +119,7 @@ export const VAULT_CONFIG_DEFAULTS: VaultConfig = {
   reasoner: { model: "claude-opus-5", codexModel: null, perCallUsd: 0.5, perDayUsd: 5.0, effort: "medium" },
   ollama: { host: "127.0.0.1", port: 11434 },
   local: { engine: "ollama", url: null, model: null, embedder: "qwen3-embedding:0.6b", keepAlive: null, hostedFallback: false, onBattery: "defer" },
-  ai: { chat: "local", ask: "local", reflectWeek: "local", consolidate: "local" },
+  ai: { ask: "local", reflectWeek: "local", consolidate: "local" },
   telemetry: { enabled: true, redact: true, retentionDays: 30, staleAfterMinutes: 30 },
   updates: { check: true, intervalHours: 24 },
   computer: { enabled: true, askTimeoutSec: 120, awake: 4 },
@@ -132,7 +130,6 @@ export const VAULT_CONFIG_DEFAULTS: VaultConfig = {
   persona: { enabled: true, runner: "auto", model: "claude-opus-5-5", effort: null, codexModel: "gpt-6-sol", failover: true, perDutyUsd: 2.0, perDayUsd: 6.0, watchdog: { graceMinutes: 45, notify: true }, tick: { flagAgeDays: 7, earlyReflect: { corrections: 3, dutyFailures: 2 } }, briefing: { enabled: true, staleHours: 3 } },
   routines: { enabled: true, runner: "auto", codexModel: null, perRunUsd: 2.0, perDayUsd: 6.0, tools: "Read,Glob,Grep", externalLabels: [] },
   crossReview: { enabled: true, claudeModel: null, codexModel: null, effort: null, perCallUsd: 3.0, perDayUsd: 10.0, timeoutSec: 600, rounds: 5 },
-  sessions: { perTurnUsd: 1.0, perDayUsd: 10.0 },
   workspaces: { activeDays: 7, idleDays: 30, commits: 10, recentSessions: 12, ignoreCommitSubjects: ["^vault backup:"], attributeByFiles: true },
   memory: { usageDays: 90, neverUsedDays: 30, dupScore: 0.8, clusterMin: 3, mapMin: 8 },
   skills: { sync: true, exclude: [] },

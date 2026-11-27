@@ -204,7 +204,7 @@ function findClusters(near, byPath, clusterMin) {
 
 /**
  * session id → { title, host } from session-index.json (written by the runtime from both hosts' sessions), titled the way
- * collectors/hostSessions.js titles a session for Spaces and Sessions: its own title, else Codex's thread name
+ * collectors/hostSessions.js titles a session for Spaces and Code's History: its own title, else Codex's thread name
  * (session_index.jsonl in the Codex home lib/host.js resolves; a rollout carries no title), else its first prompt.
  */
 function sessionTitles(vault, { cfg, env = process.env } = {}) {

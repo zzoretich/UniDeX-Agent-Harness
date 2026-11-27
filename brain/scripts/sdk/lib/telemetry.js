@@ -260,40 +260,10 @@ function attachTelemetry({ script, prompt }) {
   };
 }
 
-/**
- * One closed run's row in runs.jsonl for a run whose events were kept elsewhere: a turn of an app session, whose
- * events live in brain/_index/sessions/ (spec 2026-10-07-unidex-sessions S8). The same shape endRun writes, with the
- * prompt and the reply under the same redaction; `extra` adds fields (host, workspace, thread).
- */
-function appendRunSummary({ script, startedAt, endedAt = new Date(), costUsd = null, turns = null, status = 'ok', prompt = null, reply = null, toolCount = 0, error = null, extra = {} }) {
-  const started = new Date(startedAt);
-  const ended = new Date(endedAt);
-  const summary = {
-    id: `${Math.floor(started.getTime() / 1000)}-${String(script).replace(/[^\w.-]+/g, '-')}-${shortId()}`,
-    script,
-    started_at: started.toISOString(),
-    ended_at: ended.toISOString(),
-    duration_ms: Math.max(0, ended.getTime() - started.getTime()),
-    cost_usd: costUsd,
-    turns,
-    status,
-    prompt: isRedacted() ? null : truncate(prompt, TRUNC),
-    reply: isRedacted() ? null : truncate(reply, TRUNC),
-    tool_count: toolCount,
-    subagents: [],
-    error,
-    ...extra,
-  };
-  fs.mkdirSync(RUNS_DIR, { recursive: true });
-  require('../../lib/fsx.js').appendLineSync(SUMMARY_LOG, JSON.stringify(summary), { lock: true });
-  return summary;
-}
-
 module.exports = {
   startRun,
   recordEvent,
   endRun,
-  appendRunSummary,
   attachTelemetry,
   RUNS_DIR,
   LIVE_DIR,

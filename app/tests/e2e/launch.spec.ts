@@ -100,7 +100,7 @@ test("an install from before 2.0: runtime update → Go local → Import → Wha
   await card(win).locator(".aos-golocal-go").click();
   await expect(card(win)).toHaveCount(0, { timeout: 60_000 });
   const user = readJson(AGENTICOS);
-  expect([user.provider, user.ai?.chat]).toEqual(["local", "local"]);
+  expect([user.provider, user.ai?.ask]).toEqual(["local", "local"]);
   expect(kept()).toEqual(["claude-opus-5-5", "gpt-6-sol", true]);
   expect([migration("local-first"), migration("import")]).toEqual(["applied", "pending"]);
   expect(fs.readdirSync(FX.v("brain/_index/migrations")).filter((f) => f.startsWith("local-first-"))).toHaveLength(1);

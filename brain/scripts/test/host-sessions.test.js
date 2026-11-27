@@ -353,7 +353,7 @@ test('team: a seat in runs.jsonl is credited through its board item\'s path, for
   assert.deepEqual(outside, []);
 });
 
-test('kind and resumable per row of spec §4, with the UUID equal to the file name\'s id; a session the app ran is a plain headless row (remove-sessions D5)', () => {
+test('kind and resumable per row of spec §4, with the UUID equal to the file name\'s id; a session the app ran is a plain headless row, credited by its folder (remove-sessions D5, D11)', () => {
   const w = world();
   const k = w.ws('k');
   const rows = {
@@ -386,13 +386,13 @@ test('kind and resumable per row of spec §4, with the UUID equal to the file na
     codexExec: ['headless', 'cwd', true, null], // codex resume <id> takes any recorded thread (codex-cli 0.162.0)
     codexMcp: ['headless', 'cwd', true, null], // the same rule
     codexArchived: ['interactive', 'cwd', false, REASONS.archived],
-    app: ['headless', 'app', false, REASONS.headless],
+    app: ['headless', 'cwd', false, REASONS.headless],
     notUuid: ['interactive', 'cwd', false, REASONS.idMismatch],
     mismatch: ['interactive', 'cwd', false, REASONS.idMismatch],
     upper: ['interactive', 'cwd', false, REASONS.idMismatch],
     noId: ['interactive', 'cwd', false, REASONS.noId],
   });
-  assert.equal(k.sessions.recent.find((r) => r.id === rows.app.id).thread, 'th-1', 'kept until remove-sessions PR 2');
+  assert.equal(k.sessions.recent.find((r) => r.id === rows.app.id).thread, undefined, 'a thread file left in brain/_index/sessions credits nothing (D11)');
   assert.equal(REASONS.app, undefined, 'no row says to open it in Sessions');
 });
 
@@ -407,7 +407,7 @@ test('remove-sessions D5: a Codex exec thread the app ran resumes by id, as any 
   ]);
   scan(w, [k]);
   const r = k.sessions.recent.find((x) => x.id === run.id);
-  assert.deepEqual([r.kind, r.via, r.resumable, r.reason], ['headless', 'app', true, null]);
+  assert.deepEqual([r.kind, r.via, r.resumable, r.reason], ['headless', 'cwd', true, null]);
 });
 
 test('titles: custom over ai in the tail, the head\'s when the tail has none, Codex session_index.jsonl, else the first real prompt cut to 80', () => {
@@ -528,7 +528,7 @@ test('two transcripts naming one session id count once: the file named for the i
   assert.deepEqual(counts(d.sessions), { claude: 2, codex: 0, total: 2 });
   assert.deepEqual(d.sessions.recent.map((r) => [r.id, r.lastAt, r.via, r.resumable]), [
     [real.id, at(0, 5), 'cwd', true],
-    [thread.id, at(2), 'app', true],
+    [thread.id, at(2), 'cwd', true],
   ]);
 });
 

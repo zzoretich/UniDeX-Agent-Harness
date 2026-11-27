@@ -326,7 +326,7 @@ stage("agenticos.json (aos init step 5)", () => {
   const version = readJson(path.join(WB, "package.json")).version;
   writeJson(AOS_CONFIG, {
     version, vault: VAULT, node: NODE, claudeConfigDir: CLAUDE,
-    // `aos init --provider none`: no background model calls; the Chat tab is hidden (a variant flips provider-state).
+    // `aos init --provider none`: no background model calls (a variant flips provider-state).
     provider: "none",
     claude: { model: "haiku", perCallUsd: 0.05, perDayUsd: 0.5 },
     ollama: { host: "127.0.0.1", port: 11434 },

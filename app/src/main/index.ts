@@ -6,7 +6,7 @@
 // check it against the read scope, the write surfaces and the program rules (./policy). Main itself writes one file
 // outside its userData: the app's record in the vault's runtime cache (hud-host.ts). The app updates itself (./updater).
 
-import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, Notification, screen, shell, type Rectangle } from "electron";
+import { app, autoUpdater, BrowserWindow, dialog, Menu, nativeTheme, net, Notification, screen, type Rectangle } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -32,7 +32,7 @@ import { registerHostIpc } from "./ipc/host";
 import { registerProcIpc } from "./ipc/proc";
 import { registerProposalsIpc } from "./ipc/proposals";
 import { registerCodeIpc } from "./ipc/code";
-import { registerSessionIpc } from "./ipc/sessions";
+import { registerHostsIpc } from "./ipc/hosts";
 import { registerSetupIpc, registerUpdateIpc } from "./ipc/setup";
 import { externalOpens, openExternalAwaited, openExternalSafe, registerShellIpc } from "./ipc/shell";
 import { registerComputerIpc } from "./ipc/computer";
@@ -57,7 +57,7 @@ import { CodeGitService } from "./services/code-git";
 import { CodeImageService } from "./services/code-images";
 import { CodeMirrorService } from "./services/code-mirror";
 import { PtyService, terminalBaseEnv, type PtyLib } from "./services/pty";
-import { SessionService, workspaceDir } from "./services/sessions";
+import { HostService } from "./services/hosts";
 import { attachInfo, hostsOf } from "./setup/attach";
 import { SetupController, type AgenticosJson } from "./setup/controller";
 import { defaultLoginPathDeps, findOnPath, isExecutable, loginPath, loginShellEnv } from "./setup/env";
@@ -180,7 +180,7 @@ const noDaemonProbe = new FlagProbe("--no-daemon");
 const ptyService = new PtyService({
   context: () => context, env: () => terminalBaseEnv(process.env, termPATH()), emit: (ev) => send(CH.ptyEvent, ev), load: () => require("node-pty") as PtyLib,
   computerOn: () => computerOn(), shellEnv: (shell, cwd, base) => loginShellEnv(shell, cwd, base),
-  resolveBin: (host) => sessionService.resolveBin(host), registry: agentRegistry, sys: computerSys, trusted: e2e.trustedCli,
+  resolveBin: (host) => hostService.resolveBin(host), registry: agentRegistry, sys: computerSys, trusted: e2e.trustedCli,
   // agent-computer R70: a Codex launch runs without Codex's shared background server when its CLI's help lists the flag
   // (the help read with the launch's environment, R77).
   noDaemon: (bin, env, sub) => noDaemonProbe.lists(bin, { env, sub }),
@@ -205,9 +205,6 @@ const ptyService = new PtyService({
     }
   },
 });
-// Agent sessions (UniDeX phase 2) and the workspace repositories they change: main's own services, behind the Sessions
-// surface. A turn outlives a page reload; quitting stops every one.
-const sessionsOn = (): boolean => policy.ids.includes("sessions");
 // agent-computer D26: the computer runs only while its surface is on (the bridge and the ask notices' post); on by
 // default since its live check on each host. `computer.enabled` is the person's switch inside it (D25).
 const computerOn = (): boolean => policy.ids.includes("computer");
@@ -223,25 +220,13 @@ function sessionNode(): string | null {
   if (typeof recorded === "string" && isExecutable(recorded)) return recorded;
   return findOnPath("node", termPATH());
 }
-const sessionService = new SessionService({
-  trash: (file) => shell.trashItem(file),
-  onRemoved: (thread) => { computerService.forget(`chat:${thread}`); computerDoor?.revoke(`chat:${thread}`); },
-  browserEnv,
-  vaultRoot: () => context.vaultRoot ?? null, enabled: sessionsOn, computerOn, context: () => context, env: process.env, node: sessionNode,
-  // A turn's start and end are when a thread's title may have changed: the browser's label is read again then, not on every state.
-  emit: (ev) => { send(CH.sessionEvent, ev); if (ev.event.kind === "prompt" || ev.event.kind === "done") computerService.retitled(`chat:${ev.thread}`); },
+// What Code needs of the host CLIs (remove-sessions D11): a launch's binary, the composer's and Routines' catalog, and the
+// Computer's off-screen notices. No surface gates it: Code needs it whichever surfaces are on (the notices keep the
+// Computer surface's own check).
+const hostService = new HostService({
+  vaultRoot: () => context.vaultRoot ?? null, computerOn, context: () => context, env: process.env, node: sessionNode,
   // A Code launch's binary is the one its terminal's PATH finds, as the typed line's was (agent-computer D18).
   terminalPATH: () => termPATH(),
-  // A Chat turn's CLI is registered while it runs, under its thread's key (`chat:<thread>`: its own browser, session-browser
-  // S1, which supersedes the folder-wide computer of agent-computer D3 and D30); its place is only the folder's label.
-  // Its exit ends the turn on the computer too: the wheel frees and its asks are cancelled (D31).
-  onAgent: (ev) => {
-    if (ev.kind === "start") { agentRegistry.add({ pid: ev.pid, host: ev.host, page: "chat", key: `chat:${ev.thread}`, label: ev.title, place: `ws:${ev.workspace}`, access: ev.access }); return; }
-    const ref = agentRegistry.get(ev.pid);
-    if (ref?.key !== `chat:${ev.thread}`) return;
-    agentRegistry.remove(ev.pid);
-    computerService.agentGone(ref);
-  },
 });
 // The Code chat view's transcript followers (spec 2026-11-09-code-chat), behind the Code chat surface: one per agent
 // terminal, ended with it; quitting stops every one.
@@ -250,7 +235,7 @@ const codeMirror = new CodeMirrorService({
   vaultRoot: () => context.vaultRoot ?? null, enabled: codeChatOn, context: () => context, env: process.env, node: sessionNode,
   ptyInfo: (id) => ptyService.info(id),
 });
-const gitService = new GitService({ workspace: (name) => workspaceDir(context.vaultRoot ?? null, name), enabled: sessionsOn, env: process.env });
+const gitService = new GitService({ env: process.env });
 // The Code tab's Diff (code-chat C8): read-only git in the folder main picks from the terminal's own cwd, whichever write
 // surfaces are on.
 const codeGit = new CodeGitService({ vaultRoot: () => context.vaultRoot ?? null, ptyInfo: (id) => ptyService.info(id), git: gitService });
@@ -280,7 +265,7 @@ const askNotifier = new AskNotifier({
     // Held until the ask settles (the notifier withdraws it then), so its click handler stays alive.
     return () => n.close();
   },
-  post: (title, body) => sessionService.postComputerNotice(title, body),
+  post: (title, body) => hostService.postComputerNotice(title, body),
   reveal: (askId) => { show(); sendComputerEvent({ type: "reveal", askId }); },
 });
 const askBroker = new AskBroker({
@@ -314,15 +299,13 @@ function pointerSurface(which: "main" | "pop"): PointerSurface | null {
   return s;
 }
 const computerPointer = new Pointer({ surface: pointerSurface, log: (line) => console.warn(`[main] ${line}`) });
-/** The terminals and threads main holds: the one check the page's Computer calls and a program's open both use (policy/computer.ts sessionAllowed). */
-const heldSessions = { terminal: (id: string): boolean => ptyService.holdsOrigin(id), thread: (id: string): boolean => sessionService.has(id) };
+/** The terminals main holds: the one check the page's Computer calls and a program's open both use (policy/computer.ts sessionAllowed). */
+const heldSessions = { terminal: (id: string): boolean => ptyService.holdsOrigin(id) };
 const computerService: ComputerService = new ComputerService({
   records: computerRecords,
-  threadExists: (session) => session.startsWith("chat:") ? sessionService.exists(session.slice("chat:".length)) : false,
   // `moved` fires only for a move that answered true (service.ts move). The door's ids follow the terminal, not the browser,
   // so they move in the computer IPC's `moved` (registerComputerIpc below), whichever way the service answered.
   moved: (from, to) => { const b = computerBrowsers.get(from); if (b) { computerBrowsers.delete(from); computerBrowsers.set(to, b); } },
-  label: (session) => (session.startsWith("chat:") ? sessionService.titleOf(session.slice("chat:".length)) : undefined),
   browser: (session, hooks) => {
     const b = new ComputerBrowser({ key: session, window: () => win, hooks });
     computerBrowsers.set(session, b);
@@ -339,11 +322,6 @@ const computerService: ComputerService = new ComputerService({
   sites: new SiteMarks(path.join(app.getPath("userData"), "computer", "sites.json")),
   config: computerSettings,
   emit: (state) => sendComputerEvent({ type: "state", state }),
-  // D35: a Chat agent's line joins its thread's timeline, live; a Code agent's stays in the pane's activity log (the
-  // service keeps it there) and its tool results. The app never writes into a terminal.
-  note: (agent, line) => {
-    if (agent.page === "chat" && agent.key.startsWith("chat:")) sessionService.noteEvent(agent.key.slice("chat:".length), line);
-  },
   popOut: (session, show) => popOutComputer(session, show),
   pointer: computerPointer,
   // session-browser S23: the check the page's calls use (registerComputerIpc below), for a program's open; S24, X4: the
@@ -355,11 +333,12 @@ const computerService: ComputerService = new ComputerService({
   liveAgent: (key) => agentRegistry.byKey(key),
   startPage: computerStartPage,
 });
-// The records are read once the app is ready, not here: a thread's browser that was on is restored through Electron's
-// session API, which throws before `ready` (session-browser S6, S7). See `restoreComputer`, called first in `whenReady`.
+// The records are read once the app is ready, not here (session-browser S6, S7): see `restoreComputer`, called first in
+// `whenReady`.
 /** Once, independent of the bridge (no vault, a failed peer addon, the surface off at start) and before the window and
- *  before any page call: the Code records become orphans before any new terminal can reuse a key, and the threads'
- *  browsers come back asleep or off. One bad record must never stop the app from starting. */
+ *  before any page call: the Code records become orphans before any new terminal can reuse a key (a resumed conversation
+ *  adopts its tabs), and a record a Sessions thread left is dropped (remove-sessions D8). One bad record must never stop
+ *  the app from starting. */
 function restoreComputer(): void {
   try {
     computerRecords.orphanCode();
@@ -769,7 +748,7 @@ registerHostIpc(trust, {
 });
 registerFsIpc(trust, () => fsService);
 registerProcIpc(trust, procService, ptyService);
-registerSessionIpc(trust, sessionService, gitService);
+registerHostsIpc(trust, hostService);
 registerCodeIpc(trust, codeMirror, codeGit, codeImages);
 registerShellIpc(trust, () => (vault.root ? scope : null), () => vault.root);
 registerSetupIpc(trust, setup);
@@ -883,7 +862,7 @@ if (!app.requestSingleInstanceLock()) {
   // The marker keeps no Computer state past the app: an agent asking now hears that the app is not running.
   // The daily image prune started once the app is ready (code-chat M2); stopped at quit like the other services.
   let stopImagePrune: () => void = () => {};
-  app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); sessionService.killAll(); codeMirror.stopAll(); shutdownComputer(); stopImagePrune(); });
+  app.on("will-quit", () => { if (vault.root) recordApp(vault.root); void bridges.sync(null); watcher?.stop(); tray?.destroy(); updates.stop(); endPageWork(); codeMirror.stopAll(); shutdownComputer(); stopImagePrune(); });
 
   void app.whenReady().then(() => {
     restoreComputer();

@@ -4,17 +4,14 @@ import {
   ALIAS_REASON, aliasCatalog,
   ACCESS_LEVELS, CODEX_ACCESS_NOTE, DEFAULT_ACCESS, EFFORT_TITLE, SESSION_EFFORTS, VAULT_EFFORTS, accessHostLine, accessLabel,
   catalogHost, catalogSource, chipText, choiceText, commandQuery, commandTyping, countsText, defaultChoice, diffTotals,
-  doneFooter, doneLine, durationText, effortLabel, effortsFor, fileCounts, fileStatusLabel, filterCommands, findModel, groupThreads,
-  hostChoices, isAccess, lastTurnUsd, mergeEvents, modelArg, modelName, relPath, searchModels, sessionSpendToday, spendLine, splitModels, statusSummary, threadAge,
+  doneFooter, doneLine, durationText, effortLabel, effortsFor, fileCounts, fileStatusLabel, filterCommands, findModel,
+  hostChoices, isAccess, lastTurnUsd, mergeEvents, modelArg, modelName, relPath, searchModels, spendLine, splitModels, statusSummary,
   catalogModelId, sameModel, transcriptModelName,
-  threadMeta, threadRows, timelineRows, toolCallLine, toolLine, toolResultText, turnChoices, turnElapsed, turnOpen, usdText,
+  threadRows, timelineRows, toolCallLine, toolLine, toolResultText, turnChoices, turnElapsed, turnOpen, usdText,
   workingText, workspaceNames, type CatalogCommand, type ThreadRow, type ToolCall,
 } from "./agentSessions";
-import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionEvent, HostSessionThread } from "../host";
+import type { HostCatalog, HostCatalogHost, HostGitStatus, HostSessionEvent } from "../host";
 
-const thread = (id: string, workspace: string, updated: string, extra: Partial<HostSessionThread> = {}): HostSessionThread => ({
-  id, workspace, host: "claude", model: null, effort: null, access: "edit", title: id, created: updated, updated, turns: 1, running: false, usd: 0, ...extra,
-});
 const ev = (kind: HostSessionEvent["kind"], turn: number, fields: Record<string, unknown> = {}): HostSessionEvent => ({ t: "2026-10-07T10:00:00.000Z", kind, turn, ...fields });
 
 test("workspaceNames: plain folder names, sorted; hidden folders and the team worktrees are left out", () => {
@@ -22,20 +19,9 @@ test("workspaceNames: plain folder names, sorted; hidden folders and the team wo
   assert.deepEqual(workspaceNames([]), []);
 });
 
-test("groupThreads: by workspace, newest first within each, the workspace with the newest thread first", () => {
-  const groups = groupThreads([
-    thread("a", "harbor-map", "2026-10-07T09:00:00Z"),
-    thread("b", "tide", "2026-10-07T11:00:00Z"),
-    thread("c", "harbor-map", "2026-10-07T10:00:00Z"),
-  ]);
-  assert.deepEqual(groups.map((g) => [g.workspace, g.threads.map((t) => t.id)]), [["tide", ["b"]], ["harbor-map", ["c", "a"]]]);
-  assert.deepEqual(groupThreads([]), []);
-});
-
-test("threadMeta and usdText: turns, then the spend (Codex's marked as an estimate)", () => {
-  assert.equal(threadMeta(thread("a", "w", "x")), "1 turn");
-  assert.equal(threadMeta(thread("a", "w", "x", { turns: 2, usd: 0.04 })), "2 turns · $0.04");
-  assert.equal(threadMeta(thread("a", "w", "x", { host: "codex", turns: 3, usd: 0.0012 })), "3 turns · ≈$0.0012");
+test("usdText: two places, four under a cent", () => {
+  assert.equal(usdText(0.04), "$0.04");
+  assert.equal(usdText(0.0012), "$0.0012");
   assert.equal(usdText(0), "$0.00");
   assert.equal(usdText(1.5), "$1.50");
 });
@@ -536,12 +522,6 @@ test("diffTotals, countsText and fileCounts: +/− across files, a binary file c
   assert.equal(fileCounts(null, "src/a.ts"), null);
 });
 
-test("threadAge: the list's short age", () => {
-  const at = (s: number) => new Date(NOW.getTime() - s * 1000).toISOString();
-  assert.deepEqual([at(10), at(12 * 60), at(3 * 3600), at(2 * 86400)].map((t) => threadAge(t, NOW)), ["now", "12m", "3h", "2d"]);
-  assert.equal(threadAge(at(30 * 86400), NOW), at(30 * 86400).slice(0, 10));
-});
-
 test("turnChoices and doneLine: a finished turn names its model, effort, length and cost", () => {
   const events = [
     ev("prompt", 1, { text: "a", model: "opus", effort: "high", access: "edit" }),
@@ -563,20 +543,7 @@ test("lastTurnUsd: the last done's spend, else its usage's; null before a turn e
   assert.equal(lastTurnUsd([ev("done", 1, { ok: false })]), null);
 });
 
-test("sessionSpendToday and spendLine: today's session:* rows against the cap", () => {
-  const now = new Date(2026, 9, 7, 15, 0, 0);
-  const at = (h: number, d = 7) => new Date(2026, 9, d, h, 0, 0).toISOString();
-  const ledger = [
-    JSON.stringify({ ts: at(9), feature: "session:claude", usd: 1.2 }),
-    JSON.stringify({ ts: at(10), feature: "session:codex", usd: 0.64 }),
-    JSON.stringify({ ts: at(11), feature: "reason:chat", usd: 3 }),
-    JSON.stringify({ ts: at(9, 6), feature: "session:claude", usd: 5 }),
-    "{\"ts\":\"torn session:",
-    JSON.stringify({ ts: "bad", feature: "session:claude", usd: 1 }),
-    "",
-  ].join("\n");
-  assert.equal(sessionSpendToday(ledger, now), 1.84);
-  assert.equal(sessionSpendToday("", now), 0);
+test("spendLine: the spend against the cap", () => {
   assert.deepEqual(spendLine(1.84, 10), { text: "$1.84 of $10", ratio: 0.184 });
   assert.deepEqual(spendLine(12, 10), { text: "$12.00 of $10", ratio: 1 });
   assert.deepEqual(spendLine(0, 2.5), { text: "$0.00 of $2.50", ratio: 0 });

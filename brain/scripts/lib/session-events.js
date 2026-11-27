@@ -1,8 +1,8 @@
 'use strict';
 /**
- * session-events.js — one event shape for a turn of an app session, whichever host ran it (spec
- * 2026-10-07-unidex-sessions S7, §4.2). The app pipes the turn's stdout through it (lib/sessions.js events) and stores
- * and shows only what comes out, so the page never parses a host's format and never reads a transcript.
+ * session-events.js — one event shape for a conversation, whichever host ran it (spec 2026-10-07-unidex-sessions S7,
+ * §4.2). The Code chat's mirror (code-mirror.js) turns a host transcript into these events, and the app shows only what
+ * comes out, so the page never parses a host's format.
  *
  *   createParser(host, { model, now })  →  { push(chunk) → events[], end() → events[], state }
  *     push takes stdout as it arrives (any chunking; a line split across chunks waits for its end); end flushes the

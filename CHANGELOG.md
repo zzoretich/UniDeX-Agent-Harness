@@ -13,9 +13,11 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 - **The Sessions tab**, with its session runner, the day's session spend line and each thread's browser. Code runs Claude Code and Codex in real terminals with a chat view, which covers it. Old links to Sessions open Code.
 - **Vault chat.** Ask about your notes in any Code session instead (`/ask-brain`, or just ask).
 - **In-app commit** (Sessions' Review changes). Commit from a terminal: ask the agent, or run git yourself.
+- **The Sessions caps and `ai.chat`.** Settings loses Session turn cap, Sessions daily cap and Vault chat runs on, `aos status` loses its sessions spend line, and `ask.js` loses `--chat`.
 
 ### Upgrading
-- Your old Sessions threads stay where they were, in `brain/_index/sessions/<workspace>/`; UniDeX no longer reads them. Each one was a headless host session, whose id is on the file's `"kind":"session"` line (the file's own name is the thread's id, not the session's). To pick one up, run `codex resume <session id>` or `claude -p --resume <session id> "<prompt>"` (as Sessions ran it) in that workspace's folder; Spaces lists them as headless runs, and a Codex one resumes from there like any Codex run.
+- Your old Sessions threads stay where they were, in `brain/_index/sessions/<workspace>/`; UniDeX no longer reads them. Each one was a headless host session, whose id is on the file's `"kind":"session"` line (the file's own name is the thread's id, not the session's). To pick one up, run `codex resume <session id>` or `claude -p --resume <session id> "<prompt>"` (as Sessions ran it) in that workspace's folder; Spaces lists them as headless runs, and a Codex one resumes from there like any Codex run. Renaming or archiving a workspace leaves them where they are.
+- `aos upgrade` removes `sessions` and `ai.chat` from `brain/config.json` and says so (`removed retired keys: …`), so `aos doctor` does not report them as unknown; every other setting you chose stays.
 
 ## [2.8.0] — 2026-11-25
 

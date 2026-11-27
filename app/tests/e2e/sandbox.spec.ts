@@ -46,10 +46,10 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
     return { top: keys(aos), code: keys(aos.code as Record<string, unknown>), fs: keys(aos.fs as Record<string, unknown>), proc: keys(aos.proc as Record<string, unknown>), pty: keys(aos.pty as Record<string, unknown>),
       shell: keys(aos.shell as Record<string, unknown>), plugin: keys(aos.plugin as Record<string, unknown>),
       setup: keys(aos.setup as Record<string, unknown>), update: keys(aos.update as Record<string, unknown>), theme: keys(aos.theme as Record<string, unknown>),
-      sessions: keys(aos.sessions as Record<string, unknown>), computer: keys(aos.computer as Record<string, unknown>), git: keys(aos.git as Record<string, unknown>),
+      hosts: keys(aos.hosts as Record<string, unknown>), computer: keys(aos.computer as Record<string, unknown>),
       proposals: keys(aos.proposals as Record<string, unknown>) };
   });
-  expect(shape.top).toEqual(["boot", "code", "computer", "fs", "git", "onCommand", "onProtocol", "onVaultChanges", "plugin", "proc", "proposals", "pty", "ready", "sessions", "setup", "shell", "theme", "update"]);
+  expect(shape.top).toEqual(["boot", "code", "computer", "fs", "hosts", "onCommand", "onProtocol", "onVaultChanges", "plugin", "proc", "proposals", "pty", "ready", "setup", "shell", "theme", "update"]);
   expect(shape.proposals).toEqual(["apply", "preview", "reject", "undo", "undos"]);
   expect(shape.fs).toEqual(["appendText", "copy", "exists", "mkdir", "readBytes", "readText", "readdir", "remove", "rename", "stat", "trash", "walk", "writeText"]);
   expect(shape.proc).toEqual(["execSync", "kill", "onEvent", "spawn"]);
@@ -59,9 +59,8 @@ test("window.aos is named functions only: no channel, no ipcRenderer, no generic
   expect(shape.setup).toEqual(["addToPath", "applyClaudeMd", "cancel", "chooseVault", "claudeMd", "finish", "fix", "importHistory", "importScan", "input", "install", "noted", "onEvent", "pathLine", "preflight", "resize", "unwire", "upgrade"]);
   expect(shape.update).toEqual(["check", "install", "onState", "state"]);
   expect(shape.theme).toEqual(["onChange", "set", "state"]);
-  expect(shape.sessions).toEqual(["catalog", "list", "onEvent", "read", "remove", "send", "start", "stop"]);
+  expect(shape.hosts).toEqual(["catalog"]);
   expect(shape.computer).toEqual(["answer", "describe", "handBack", "mark", "move", "nav", "navigate", "onEvent", "openLink", "openOutside", "popOut", "power", "select", "show", "tab", "takeOver"]);
-  expect(shape.git).toEqual(["commit", "diff", "status"]);
   expect(shape.code).toEqual(["follow", "git", "saveImage", "unfollow", "view"]);
 });
 
@@ -117,20 +116,6 @@ test("setup names a fix by id only, and refuses each step outside its state", as
   // The theme takes one of its three choices, nothing else.
   expect(await call((aos) => (aos.theme.set as (s: string) => unknown)("sepia"))).toMatchObject({ ok: false, code: "EINVAL" });
   expect(await call((aos) => aos.theme.state())).toMatchObject({ source: "system" });
-  // This run is read-only, Sessions included (spec 2026-10-07-unidex-sessions): nothing starts, nothing in git is read.
-  type Sess = { start(r: unknown): Promise<unknown>; list(): Promise<unknown>; catalog(refresh?: unknown): Promise<unknown> };
-  type Git = { status(w: string): Promise<unknown> };
-  expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "claude", text: "hi" }))).toMatchObject({ ok: false, code: "EROFS" });
-  expect(await call((aos) => (aos.sessions as unknown as Sess).list())).toMatchObject({ ok: false, code: "EROFS" });
-  expect(await call((aos) => (aos.sessions as unknown as Sess).catalog())).toMatchObject({ ok: false, code: "EROFS" });
-  expect(await call((aos) => (aos.git as unknown as Git).status("harbor-map"))).toMatchObject({ ok: false, code: "EROFS" });
-  // A workspace that could leave the folder, or a host that is not one, never reaches main's service.
-  expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "../x", host: "claude", text: "hi" }))).toMatchObject({ ok: false, code: "EINVAL" });
-  expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "sh", text: "hi" }))).toMatchObject({ ok: false, code: "EINVAL" });
-  // An access level or an effort that is not one, or a model that reads as a flag (sessions-ux U6, U7).
-  expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "claude", text: "hi", access: "root" }))).toMatchObject({ ok: false, code: "EINVAL" });
-  expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "codex", text: "hi", effort: "turbo" }))).toMatchObject({ ok: false, code: "EINVAL" });
-  expect(await call((aos) => (aos.sessions as unknown as Sess).start({ workspace: "harbor-map", host: "claude", text: "hi", model: "--dangerously-skip-permissions" }))).toMatchObject({ ok: false, code: "EINVAL" });
   // The Code chat's mirror is off by default (code-chat R13): a well-formed call is refused, a malformed one never reaches main.
   type Code = { follow(r: unknown): Promise<unknown>; view(r: unknown): Promise<unknown>; git(r: unknown): Promise<unknown>; saveImage(r: unknown): Promise<unknown> };
   expect(await call((aos) => (aos.code as unknown as Code).follow({ pty: "t1", host: "claude", terminal: "aaaaaaaa-0000-4000-8000-000000000001" }))).toMatchObject({ ok: false, code: "EROFS" });

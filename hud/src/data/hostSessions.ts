@@ -104,8 +104,6 @@ export interface RecentRow {
   viaText: string;
   resumable: boolean;
   reason: string | null;
-  /** An old Sessions thread's id (via app), until remove-sessions PR 2 drops it. */
-  thread: string | null;
   /** The start folder, ~-shortened, and whether it still exists. */
   cwd: string | null;
   cwdLabel: string | null;
@@ -135,7 +133,6 @@ export function recentRows(s: WorkspaceSessions | null | undefined, now: number 
         title: (r.title ?? "").trim() || "Untitled session", titleSource: r.titleSource ?? null,
         at, age, meta: `${r.host}${age ? ` · ${age}` : ""}${KIND_NOTE[r.kind] ?? ""}`,
         via: r.via, viaText: VIA_TEXT[r.via] ?? "", resumable: r.resumable === true, reason: r.reason ?? null,
-        thread: typeof r.thread === "string" && r.thread ? r.thread : null,
         cwd: r.cwd ?? null, cwdLabel: r.cwd ? shortenCwd(r.cwd, home) : null, startExists: r.startExists !== false,
       };
     })

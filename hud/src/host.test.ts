@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as nodeFs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fs, hudHost, sessionsHost, setHudHost, spawn, utf8, utf8Bytes, type HudHost } from "./host";
+import { fs, hostsHost, hudHost, setHudHost, spawn, utf8, utf8Bytes, type HudHost } from "./host";
 import { createNodeHost } from "./nodeHost";
 
 const ROOT = path.resolve(__dirname, "..");
@@ -58,16 +58,13 @@ test("the Node host is the default, and setHudHost replaces it for every module"
   assert.equal(fs.existsSync("/no/such/file"), false);
 });
 
-test("agent sessions are the app's alone: the Node host has none, and a host with both offers them", () => {
+test("remove-sessions D11: the hosts' catalog is the app's alone: the Node host has none, and the app's offers it with no sessions", () => {
   const node = hudHost();
-  assert.equal(sessionsHost(), null);
-  const sessions = { start: async () => ({ ok: false as const, error: "x", code: "EROFS" }) } as unknown as NonNullable<HudHost["sessions"]>;
-  const git = {} as NonNullable<HudHost["git"]>;
-  setHudHost({ ...createNodeHost(), sessions, git });
+  assert.equal(hostsHost(), null);
+  const hosts = { catalog: async () => ({ ok: false as const, error: "x", code: "EIO" }) } as unknown as NonNullable<HudHost["hosts"]>;
+  setHudHost({ ...createNodeHost(), hosts });
   try {
-    assert.equal(sessionsHost()?.sessions, sessions);
-    setHudHost({ ...createNodeHost(), sessions });
-    assert.equal(sessionsHost(), null, "sessions without git is not offered");
+    assert.equal(hostsHost(), hosts);
   } finally {
     setHudHost(node);
   }

@@ -30,7 +30,7 @@
  * (reasoner.codexModel → codex.model → the user's Codex default) when Codex is configured and
  * logged in; an explicit `provider: codex` puts Codex first (spec 2026-09-23-codex-parity-gaps D1).
  * `provider: none` still wins: it means nothing calls a model. Every other role gets the global provider.
- * Under `provider: local` the reasoner features (Vault chat, ask, reflect-week, consolidate-memory; AI_FEATURES) follow
+ * Under `provider: local` the reasoner features (ask, reflect-week, consolidate-memory; AI_FEATURES) follow
  * their own switch `ai.<feature>` (local-first A2): `local`, the default, answers on the local engine and never a host
  * (down: none with the local reason, and the button that asked may offer a host once); `host` keeps the hosted
  * reasoner above. A caller that names a host (`prefer`) always gets that host. Other providers ignore `ai.*`.
@@ -327,7 +327,7 @@ function makeLocal(r, deps = {}) {
  * local-first A2: the reasoner features with a per-feature engine switch, by the feature label their ledger rows and
  * local-usage rows carry, and the `ai.<key>` that switches each.
  */
-const AI_FEATURES = Object.freeze({ 'reason:chat': 'chat', 'reason:ask': 'ask', 'reason:reflect-week': 'reflectWeek', 'reason:consolidate-memory': 'consolidate' });
+const AI_FEATURES = Object.freeze({ 'reason:ask': 'ask', 'reason:reflect-week': 'reflectWeek', 'reason:consolidate-memory': 'consolidate' });
 function aiKeyOf(feature) { return Object.prototype.hasOwnProperty.call(AI_FEATURES, feature) ? AI_FEATURES[feature] : null; }
 
 /** Where an AI feature runs: 'local' (the local engine) only under provider local with `ai.<key>` not `host`; else 'host'. */
@@ -426,7 +426,7 @@ async function resolveProvider({ mode, feature = 'unknown', deps = {} } = {}) {
  * cache is shared — so the HUD and `aos status` are not misled by a reasoner resolution.
  */
 /**
- * The provider for a role. For the reasoner the caller may name the host, model and effort (Vault chat's menu, spec
+ * The provider for a role. For the reasoner the caller may name the host, model and effort (ask.js --host=, spec
  * 2026-10-07-sessions-ux U9): `prefer` is the only host tried (no silent move to the other), `model` replaces the
  * role's model, and `effort` (a level that host's CLI takes) is fixed for every call, whatever `think` a caller passes.
  *

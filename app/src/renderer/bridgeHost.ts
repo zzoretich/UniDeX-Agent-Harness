@@ -3,7 +3,7 @@
 // recorded in the guard log and answered as Node would answer a refusal: an EROFS error, or for a spawn a child that
 // prints why and exits 1 (as the page's write guards did before main took the checks over).
 
-import type { HostChild, HostCode, HostComputer, HostDirent, HostFs, HostGit, HostProposals, HostPty, HostPtyProcess, HostSessions, HostStats, HudHost } from "../../../hud/src/host";
+import type { HostChild, HostCode, HostComputer, HostDirent, HostFs, HostHosts, HostProposals, HostPty, HostPtyProcess, HostStats, HudHost } from "../../../hud/src/host";
 import { refuse } from "../../obsidian-compat/src/guard";
 import { callError } from "../../obsidian-compat/src/bridge";
 import * as path from "./shims/path";
@@ -233,7 +233,7 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     },
   };
 
-  // ── agent sessions and their repositories: main answers every call with a Result, refusals included; a call that
+  // ── main answers every call with a Result, refusals included; a call that
   // fails on the way (the bridge itself) answers the same way, so the HUD shows it rather than throws ──
   const settle = <T>(p: Promise<Result<T>>): Promise<Result<T>> =>
     p.catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err), code: "EIO" }));
@@ -261,16 +261,8 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     move: (from, to) => aos.computer.move(from, to),
     onEvent: (cb) => aos.computer.onEvent(cb),
   };
-  const sessions: HostSessions = {
-    start: (req) => settle(aos.sessions.start(req)),
-    send: (req) => settle(aos.sessions.send(req)),
-    stop: (thread) => aos.sessions.stop(thread),
-    remove: (thread) => settle(aos.sessions.remove(thread)),
-    list: () => settle(aos.sessions.list()),
-    read: (thread) => settle(aos.sessions.read(thread)),
-    catalog: (refresh) => settle(aos.sessions.catalog(refresh)),
-    onEvent: (cb) => aos.sessions.onEvent(cb),
-  };
+  // What Code needs of the host CLIs (remove-sessions D11): main answers whichever surfaces are on.
+  const hosts: HostHosts = { catalog: (refresh) => settle(aos.hosts.catalog(refresh)) };
   // The Code chat view's transcript mirror (spec 2026-11-09-code-chat): main answers a refusal while its surface is off.
   const code: HostCode = {
     // The surfaces are fixed when the app starts: off, no terminal carries AOS_TERMINAL (code-chat F9).
@@ -282,11 +274,6 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
     git: (req) => settle(aos.code.git(req)),
     // The composer's images (code-chat C7): main checks them and picks the path, only while the Code chat surface is on.
     saveImage: (req) => settle(aos.code.saveImage(req)),
-  };
-  const git: HostGit = {
-    status: (workspace) => settle(aos.git.status(workspace)),
-    diff: (workspace, file) => settle(aos.git.diff(workspace, file)),
-    commit: (workspace, message) => settle(aos.git.commit(workspace, message)),
   };
 
   const proposals: HostProposals = {
@@ -300,10 +287,9 @@ export function createBridgeHost(aos: AosBridge, info: BootInfo): BridgeHost {
   const host: HudHost = {
     fs,
     spawn,
-    sessions,
+    hosts,
     computer,
     code,
-    git,
     proposals,
     execFileSync: (file, args, opts) => {
       const r = aos.proc.execSync({ file, args, timeoutMs: opts.timeout });

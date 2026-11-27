@@ -473,24 +473,20 @@ test('adopt (both forms), hide and unhide refuse a folder that contains the vaul
   assert.ok(!fs.existsSync(path.join(vault, 'brain', '_index', 'workspaces-hidden.json')));
 });
 
-test('rename refuses when brain/_index/sessions/<from> or <to> is not a folder', async () => {
+test('remove-sessions D11: rename leaves brain/_index/sessions alone: a thread folder left from Sessions neither moves nor blocks', async () => {
   const sb = sandbox();
   fs.mkdirSync(ws(sb, 'alpha'), { recursive: true });
-  write(idx(sb, 'sessions', 'alpha'), 'a file\n');
-  await assert.rejects(() => W.main(['rename', 'alpha', 'gamma'], sb.opts), /brain\/_index\/sessions\/alpha is not a folder/);
-  fs.unlinkSync(idx(sb, 'sessions', 'alpha'));
-  fs.mkdirSync(path.join(sb.home, 'threads-away'));
-  fs.symlinkSync(path.join(sb.home, 'threads-away'), idx(sb, 'sessions', 'alpha'));
-  await assert.rejects(() => W.main(['rename', 'alpha', 'gamma'], sb.opts), /brain\/_index\/sessions\/alpha is not a folder/);
-  fs.unlinkSync(idx(sb, 'sessions', 'alpha'));
-  thread(sb, 'alpha', 't1', []);
+  const t1 = thread(sb, 'alpha', 't1', [{ t: '2026-10-01T10:00:00.000Z', kind: 'prompt', text: 'x', turn: 1 }]);
+  const before = read(t1);
   write(idx(sb, 'sessions', 'gamma'), 'a file\n');
-  await assert.rejects(() => W.main(['rename', 'alpha', 'gamma'], sb.opts), /brain\/_index\/sessions\/gamma is not a folder/);
-  assert.ok(fs.existsSync(ws(sb, 'alpha')) && !fs.existsSync(ws(sb, 'gamma')) && !fs.existsSync(ws(sb, 'alpha', 'workspace.md')), 'nothing moved or written');
-  assert.deepEqual(fs.readdirSync(path.join(sb.home, 'threads-away')), []);
+  const r = await json(sb, ['rename', 'alpha', 'gamma']);
+  assert.equal(r.threads, undefined, 'no thread count in the answer');
+  assert.ok(fs.existsSync(ws(sb, 'gamma')) && !fs.existsSync(ws(sb, 'alpha')), 'the folder moved');
+  assert.equal(read(t1), before, 'the old thread file is where it was, unchanged');
+  assert.equal(read(idx(sb, 'sessions', 'gamma')), 'a file\n');
 });
 
-test('more links: stubs past a dangling CLAUDE.md and an outward README.md, adopt --into and restore past a linked workspace.md, a linked thread, a linked hidden list', async () => {
+test('more links: stubs past a dangling CLAUDE.md and an outward README.md, adopt --into and restore past a linked workspace.md, a linked hidden list', async () => {
   const sb = sandbox();
   const secret = path.join(sb.home, 'secret');
   write(path.join(secret, 'readme.md'), '# mine\n');
@@ -515,16 +511,6 @@ test('more links: stubs past a dangling CLAUDE.md and an outward README.md, adop
   await assert.rejects(() => W.main(['restore', 'old'], { ...sb.opts, runScript: fakeBrain([]) }), /refusing to restore old: workspace\.md is a symlink/);
   assert.equal(read(path.join(secret, 'ws.md')), '---\nstatus: done\n---\n');
   assert.ok(fs.existsSync(ws(sb, '_archive', 'old')) && !fs.existsSync(ws(sb, 'old')));
-  // rename: a linked thread file moves with its folder as a link and is never rewritten.
-  fs.mkdirSync(ws(sb, 'alpha'), { recursive: true });
-  thread(sb, 'alpha', 't1', []);
-  const outsideThread = path.join(secret, 't9.jsonl');
-  write(outsideThread, JSON.stringify({ schema: 1, kind: 'meta', thread: 't9', workspace: 'alpha' }) + '\n');
-  fs.symlinkSync(outsideThread, idx(sb, 'sessions', 'alpha', 't9.jsonl'));
-  const r = await json(sb, ['rename', 'alpha', 'kelp']);
-  assert.equal(r.threads.rewritten, 1);
-  assert.ok(fs.lstatSync(idx(sb, 'sessions', 'kelp', 't9.jsonl')).isSymbolicLink());
-  assert.equal(JSON.parse(read(outsideThread)).workspace, 'alpha', 'the link target is not rewritten');
   // hide: a linked workspaces-hidden.json is replaced by a file of its own; what it pointed at is neither read nor written.
   const outsideList = path.join(secret, 'hidden.json');
   write(outsideList, JSON.stringify({ schema: 1, paths: ['~/private/thing'] }));
@@ -598,7 +584,7 @@ function archiveWorld() {
   return { sb, projects };
 }
 
-test('archive moves the folder and its map into _archive/, marks it, flips linked notes\' status tags, keeps threads, rescans', async () => {
+test('archive moves the folder and its map into _archive/, marks it, flips linked notes\' status tags, rescans', async () => {
   const { sb, projects } = archiveWorld();
   const before = { tide: read(path.join(projects, 'tide-work.md')), beta: read(path.join(projects, 'beta.md')), later: read(path.join(projects, 'alpha-later.md')) };
   const now = Date.parse('2026-10-10T12:00:00Z');
@@ -607,7 +593,7 @@ test('archive moves the folder and its map into _archive/, marks it, flips linke
   const j = await json(sb, ['archive', 'alpha'], { now, runScript: fakeBrain(brain) });
   assert.deepEqual(j, {
     ok: true, name: 'alpha', archivedAs: '_archive/alpha', path: 'workspaces/_archive/alpha', archived: day, map: true,
-    notes: ['brain/memory/projects/alpha.md', 'brain/memory/projects/kelp.md', 'brain/memory/projects/tide-work.md'], brainMd: { ok: true }, threads: 1, rescanned: true,
+    notes: ['brain/memory/projects/alpha.md', 'brain/memory/projects/kelp.md', 'brain/memory/projects/tide-work.md'], brainMd: { ok: true }, rescanned: true,
   });
   assert.ok(!fs.existsSync(ws(sb, 'alpha')));
   assert.equal(read(ws(sb, '_archive', 'alpha', 'README.md')), '# Alpha\n\nTide tables.\n');
@@ -623,7 +609,7 @@ test('archive moves the folder and its map into _archive/, marks it, flips linke
   assert.ok(fs.lstatSync(path.join(projects, 'linked.md')).isSymbolicLink());
   assert.equal(read(path.join(sb.home, 'notes', 'linked.md')), '---\nworkspace: alpha\ntags: [status/active]\n---\n');
   assert.deepEqual(brain, [['build-brain-md.js']]);
-  // Threads stay where they are, read-only until restore (sessions.ts refuses their turns).
+  // A thread file left from Sessions is not the verb's (remove-sessions D11): it stays where it was.
   assert.ok(fs.existsSync(idx(sb, 'sessions', 'alpha', 't1.jsonl')));
   const snap = JSON.parse(read(idx(sb, 'snapshot.json')));
   const entry = snap.workspaces.find((w) => w.name === '_archive/alpha');
@@ -634,7 +620,7 @@ test('archive moves the folder and its map into _archive/, marks it, flips linke
   // Restore reverses it.
   brain.length = 0;
   const r = await json(sb, ['restore', 'alpha'], { runScript: fakeBrain(brain) });
-  assert.deepEqual(r, { ok: true, name: 'alpha', path: 'workspaces/alpha', map: true, notes: ['brain/memory/projects/alpha.md', 'brain/memory/projects/kelp.md', 'brain/memory/projects/tide-work.md'], brainMd: { ok: true }, threads: 1, rescanned: true });
+  assert.deepEqual(r, { ok: true, name: 'alpha', path: 'workspaces/alpha', map: true, notes: ['brain/memory/projects/alpha.md', 'brain/memory/projects/kelp.md', 'brain/memory/projects/tide-work.md'], brainMd: { ok: true }, rescanned: true });
   assert.equal(read(ws(sb, 'alpha', 'workspace.md')), '---\nstatus: paused\n# a comment\naliases:\n  - workspaces/kelp\n  - workspaces/alpha\n---\n\nBody stays.\n');
   assert.ok(fs.existsSync(idx(sb, 'workspace-maps', 'alpha.json')));
   assert.equal(read(path.join(projects, 'tide-work.md')), before.tide);
@@ -653,7 +639,7 @@ test('archive moves the folder and its map into _archive/, marks it, flips linke
   await assert.rejects(() => W.main(['restore', 'nope'], sb.opts), /no such workspace/);
 });
 
-test('archive, restore and rename refuse a running team item, an unfinished Sessions turn and linked git worktrees', async () => {
+test('archive, restore and rename refuse a running team item and linked git worktrees; a thread file left from Sessions is no running turn (remove-sessions D11)', async () => {
   const sb = sandbox();
   const now = Date.now();
   fs.mkdirSync(ws(sb, 'alpha'), { recursive: true });
@@ -666,15 +652,8 @@ test('archive, restore and rename refuse a running team item, an unfinished Sess
   }
   // A dead dispatcher's marker is the team's to sweep, not a running item.
   write(path.join(team, 'running', 'r1.json'), JSON.stringify({ schema: 1, item: 'site-01', pid: 2 ** 30, host: os.hostname() }));
-  // A Sessions turn started 5 minutes ago with no `done` after it.
+  // A Sessions thread whose last turn never finished, from minutes ago: Sessions is gone, so nothing runs it and it blocks nothing.
   thread(sb, 'alpha', 't2', [{ t: new Date(now - 5 * 60000).toISOString(), kind: 'prompt', text: 'go' }, { t: new Date(now - 4 * 60000).toISOString(), kind: 'text', text: 'working' }], 'Fix the tide parser');
-  const t3 = thread(sb, 'alpha', 't3', [{ t: new Date(now - 3 * 3600000).toISOString(), kind: 'prompt', text: 'old' }], 'Abandoned turn');
-  // Abandoned three hours ago: the file has not changed since.
-  fs.utimesSync(t3, new Date(now - 3 * 3600000), new Date(now - 3 * 3600000));
-  thread(sb, 'alpha', 't4', [{ t: new Date(now - 60000).toISOString(), kind: 'prompt', text: 'x' }, { t: new Date(now - 30000).toISOString(), kind: 'done', ok: true }]);
-  await assert.rejects(() => W.main(['archive', 'alpha'], sb.opts), /a Sessions turn there has not finished \("Fix the tide parser"\)/);
-  assert.deepEqual(W.runningTurns({ vault: sb.vault }, 'alpha', now), ['Fix the tide parser'], 'the finished turn and the 3-hour-old one are not running');
-  fs.rmSync(idx(sb, 'sessions', 'alpha', 't2.jsonl'));
   // A repository with linked worktrees: moving it would break git's links.
   write(ws(sb, 'alpha', '.git', 'worktrees', 'feat', 'gitdir'), path.join(sb.home, 'code', 'alpha.worktrees', 'feat', '.git') + '\n');
   await assert.rejects(() => W.main(['archive', 'alpha'], sb.opts), (e) => /linked worktrees \(~\/code\/alpha\.worktrees\/feat\)/.test(e.message) && /git worktree repair/.test(e.message));
@@ -719,29 +698,18 @@ test('moving verbs refuse a headless run, reserved names, Scratch and a symlinke
   assert.ok(fs.existsSync(ws(sb, 'alpha')) && !fs.existsSync(ws(sb, '_archive', 'alpha')));
 });
 
-test('rename moves the folder, its map and its threads, rewrites each thread\'s meta line, and keeps the old name as an alias', async () => {
+test('rename moves the folder and its map, and keeps the old name as an alias', async () => {
   const sb = sandbox();
   write(ws(sb, 'alpha', 'README.md'), '# Alpha\n');
   write(idx(sb, 'workspace-maps', 'alpha.json'), '{}');
-  const t1 = thread(sb, 'alpha', 't1', [{ t: '2026-10-01T10:00:00.000Z', kind: 'prompt', text: 'a "quoted" line' }, { t: '2026-10-01T10:00:01.000Z', kind: 'done', ok: true }]);
-  thread(sb, 'alpha', 't2', [{ t: '2026-10-01T11:00:00.000Z', kind: 'prompt', text: 'b' }, { t: '2026-10-01T11:00:01.000Z', kind: 'done', ok: true }]);
-  const tail1 = fs.readFileSync(t1).subarray(fs.readFileSync(t1).indexOf(0x0a));
   seedSnapshot(sb, []);
   const j = await json(sb, ['rename', 'alpha', 'tide-tables']);
-  assert.deepEqual(j, { ok: true, from: 'alpha', name: 'tide-tables', path: 'workspaces/tide-tables', alias: 'workspaces/alpha', map: true, threads: { moved: 2, rewritten: 2 }, rescanned: true });
+  assert.deepEqual(j, { ok: true, from: 'alpha', name: 'tide-tables', path: 'workspaces/tide-tables', alias: 'workspaces/alpha', map: true, rescanned: true });
   assert.ok(!fs.existsSync(ws(sb, 'alpha')) && fs.existsSync(ws(sb, 'tide-tables', 'README.md')));
   assert.equal(read(ws(sb, 'tide-tables', 'workspace.md')), '---\naliases:\n  - workspaces/alpha\n---\n');
   assert.ok(fs.existsSync(idx(sb, 'workspace-maps', 'tide-tables.json')) && !fs.existsSync(idx(sb, 'workspace-maps', 'alpha.json')));
-  assert.ok(!fs.existsSync(idx(sb, 'sessions', 'alpha')));
-  for (const id of ['t1', 't2']) {
-    const lines = read(idx(sb, 'sessions', 'tide-tables', `${id}.jsonl`)).split('\n');
-    const meta = JSON.parse(lines[0]);
-    assert.deepEqual([meta.kind, meta.thread, meta.workspace, meta.title], ['meta', id, 'tide-tables', `Thread ${id}`]);
-  }
-  const moved = fs.readFileSync(idx(sb, 'sessions', 'tide-tables', 't1.jsonl'));
-  assert.deepEqual(moved.subarray(moved.indexOf(0x0a)), tail1, 'every line after the meta line is kept byte for byte');
   const entry = JSON.parse(read(idx(sb, 'snapshot.json'))).workspaces.find((w) => w.name === 'tide-tables');
-  assert.equal(entry.sessions.recent.length, 0, 'the threads hold no host session, so nothing is credited yet');
+  assert.equal(entry.sessions.recent.length, 0, 'no session ran there, so nothing is credited');
   // The new name: kebab-case only, free, not held by an archived workspace.
   for (const bad of ['Tide Two', 'tide_two', 'tide-', 'a'.repeat(65)]) {
     await assert.rejects(() => W.main(['rename', 'tide-tables', bad], sb.opts), /kebab-case/, bad);
@@ -752,31 +720,6 @@ test('rename moves the folder, its map and its threads, rewrites each thread\'s 
   await assert.rejects(() => W.main(['rename', 'tide-tables', 'beta'], sb.opts), /workspaces\/beta already exists/);
   await assert.rejects(() => W.main(['rename', 'tide-tables', 'gone'], sb.opts), /held by an archived workspace/);
   await assert.rejects(() => W.main(['rename', 'tide-tables', 'tide-tables'], sb.opts), /already has that name/);
-  // Threads join a folder that already exists, unless a file would collide.
-  thread(sb, 'omega', 'old', []);
-  thread(sb, 'beta', 'old', []);
-  await assert.rejects(() => W.main(['rename', 'beta', 'omega'], sb.opts), /already holds old\.jsonl/);
-  assert.ok(fs.existsSync(ws(sb, 'beta')), 'refused before anything moved');
-  fs.renameSync(idx(sb, 'sessions', 'beta', 'old.jsonl'), idx(sb, 'sessions', 'beta', 'b1.jsonl'));
-  const m = await json(sb, ['rename', 'beta', 'omega']);
-  assert.deepEqual(m.threads, { moved: 1, rewritten: 1 });
-  assert.deepEqual(fs.readdirSync(idx(sb, 'sessions', 'omega')).sort(), ['b1.jsonl', 'old.jsonl']);
-  assert.equal(JSON.parse(read(idx(sb, 'sessions', 'omega', 'old.jsonl')).split('\n')[0]).workspace, 'omega');
-});
-
-test('a rename cut short after its threads moved is finished by running it again', async () => {
-  const sb = sandbox();
-  fs.mkdirSync(ws(sb, 'alpha'), { recursive: true });
-  thread(sb, 'alpha', 't1', []);
-  // As if a run died after moving the threads, before rewriting them and moving the folder.
-  fs.mkdirSync(idx(sb, 'sessions', 'kelp'), { recursive: true });
-  fs.renameSync(idx(sb, 'sessions', 'alpha', 't1.jsonl'), idx(sb, 'sessions', 'kelp', 't1.jsonl'));
-  fs.rmdirSync(idx(sb, 'sessions', 'alpha'));
-  write(ws(sb, 'alpha', 'workspace.md'), '---\naliases:\n  - workspaces/alpha\n---\n');
-  const j = await json(sb, ['rename', 'alpha', 'kelp']);
-  assert.deepEqual(j.threads, { moved: 0, rewritten: 1 });
-  assert.equal(JSON.parse(read(idx(sb, 'sessions', 'kelp', 't1.jsonl')).split('\n')[0]).workspace, 'kelp');
-  assert.equal(read(ws(sb, 'kelp', 'workspace.md')), '---\naliases:\n  - workspaces/alpha\n---\n', 'the alias is not added twice');
 });
 
 test('draft prints fields and a baseHash and writes no workspace file; set saves allow-listed keys against --expect', async () => {
@@ -998,7 +941,7 @@ test('a case variant of a host config folder or the vault is the folder itself (
   assert.ok(!fs.existsSync(idx(sb, 'workspaces-hidden.json')));
 });
 
-test('a linked brain/memory or brain/_index/sessions is never written through (archive flips nothing there; rename refuses)', async () => {
+test('a linked brain/memory or brain/_index/sessions is never written through (archive flips nothing there; rename leaves it alone)', async () => {
   const sb = sandbox();
   fs.mkdirSync(ws(sb, 'foo'), { recursive: true });
   const elsewhere = path.join(sb.home, 'elsewhere');
@@ -1012,14 +955,14 @@ test('a linked brain/memory or brain/_index/sessions is never written through (a
   assert.equal(read(ws(sb, '_archive', 'foo', 'workspace.md')).includes('archivedNotes'), false);
   await json(sb, ['restore', 'foo'], { runScript: fakeBrain([]) });
   assert.equal(read(path.join(elsewhere, 'projects', 'foo.md')), note);
-  // Threads behind a linked sessions folder: rename refuses before anything moves.
+  // Threads behind a linked sessions folder (left from Sessions): rename neither reads nor writes them (remove-sessions D11).
   const away = path.join(sb.home, 'away');
   write(path.join(away, 'foo', 't1.jsonl'), JSON.stringify({ schema: 1, kind: 'meta', thread: 't1', workspace: 'foo' }) + '\n');
   fs.symlinkSync(away, idx(sb, 'sessions'));
-  await assert.rejects(() => W.main(['rename', 'foo', 'bar'], sb.opts), /refusing to rename foo: brain\/_index\/sessions is not a plain folder/);
+  await json(sb, ['rename', 'foo', 'bar']);
   assert.deepEqual(fs.readdirSync(away), ['foo']);
   assert.equal(JSON.parse(read(path.join(away, 'foo', 't1.jsonl'))).workspace, 'foo');
-  assert.ok(fs.existsSync(ws(sb, 'foo')));
+  assert.ok(fs.existsSync(ws(sb, 'bar')) && !fs.existsSync(ws(sb, 'foo')));
 });
 
 test('restore undoes exactly what archive did: a note archived before stays archived, and a dated archive goes back to its name', async () => {
@@ -1041,9 +984,9 @@ test('restore undoes exactly what archive did: a note archived before stays arch
   const md = read(ws(sb, '_archive', dated, 'workspace.md'));
   assert.match(md, /archivedNotes:\n {2}- brain\/memory\/projects\/harbor-v2\.md\n/);
   assert.match(md, /archivedFrom: harbor\n/);
-  // Restore: back to workspaces/harbor (its threads and map with it), and only harbor-v2 wakes.
+  // Restore: back to workspaces/harbor (its map with it), and only harbor-v2 wakes.
   const r = await json(sb, ['restore', dated], { runScript: fakeBrain([]) });
-  assert.deepEqual(r, { ok: true, name: 'harbor', path: 'workspaces/harbor', restoredFrom: `_archive/${dated}`, map: true, notes: ['brain/memory/projects/harbor-v2.md'], brainMd: { ok: true }, threads: 1, rescanned: false });
+  assert.deepEqual(r, { ok: true, name: 'harbor', path: 'workspaces/harbor', restoredFrom: `_archive/${dated}`, map: true, notes: ['brain/memory/projects/harbor-v2.md'], brainMd: { ok: true }, rescanned: false });
   assert.ok(fs.existsSync(ws(sb, 'harbor')) && !fs.existsSync(ws(sb, '_archive', dated)));
   assert.ok(fs.existsSync(idx(sb, 'workspace-maps', 'harbor.json')));
   assert.match(read(path.join(projects, 'harbor.md')), /status\/archived/, 'archived before: stays archived');
@@ -1075,23 +1018,6 @@ test('an alias naming another live workspace is no former name: archive never fl
   const j = await json(sb, ['archive', 'evil'], { runScript: fakeBrain([]) });
   assert.deepEqual(j.notes, ['brain/memory/projects/gone.md'], 'a freed former name still counts');
   assert.match(read(path.join(projects, 'other.md')), /status\/active/);
-});
-
-test('a Sessions turn still appending its events is running however old its prompt; a new meta line is no activity', async () => {
-  const sb = sandbox();
-  const now = Date.now();
-  // A long turn: its prompt 45 minutes old, the file written a minute ago.
-  const f = thread(sb, 'alpha', 'long', [{ t: new Date(now - 45 * 60000).toISOString(), kind: 'prompt', text: 'go' }, { t: new Date(now - 60000).toISOString(), kind: 'text', text: 'still working' }], 'Long turn');
-  assert.deepEqual(W.runningTurns({ vault: sb.vault }, 'alpha', now), ['Long turn']);
-  fs.utimesSync(f, new Date(now - 45 * 60000), new Date(now - 45 * 60000));
-  assert.deepEqual(W.runningTurns({ vault: sb.vault }, 'alpha', now), [], 'abandoned: neither the prompt nor the file is recent');
-  // Rename rewrites the meta line and keeps the file's times, so the abandoned turn does not look fresh afterwards.
-  fs.mkdirSync(ws(sb, 'alpha'), { recursive: true });
-  await json(sb, ['rename', 'alpha', 'kelp']);
-  const moved = idx(sb, 'sessions', 'kelp', 'long.jsonl');
-  assert.equal(JSON.parse(read(moved).split('\n')[0]).workspace, 'kelp');
-  assert.ok(Math.abs(fs.statSync(moved).mtimeMs - (now - 45 * 60000)) < 2000);
-  assert.deepEqual(W.runningTurns({ vault: sb.vault }, 'kelp', now), []);
 });
 
 test('flipProjectNotes changes only the first frontmatter status tag line: CRLF, block lists, quoted tags; the body never', () => {
@@ -1194,7 +1120,7 @@ test('containment: the verbs change only workspaces/**, brain/_index/** and a li
   assert.deepEqual(b.notes, ['brain/memory/projects/beta.md']);
   assert.deepEqual(b.brainMd, { ok: true }, 'build-brain-md ran in its own process against this vault');
   assert.notEqual(read(idx(sb, 'BRAIN.md')), '# seed\n', 'BRAIN.md was rebuilt');
-  assert.equal(aos(['rename', 'alpha', 'alpha-two', '--json']).threads.rewritten, 1);
+  assert.equal(aos(['rename', 'alpha', 'alpha-two', '--json']).name, 'alpha-two');
   assert.equal(aos(['adopt', loose, '--name', 'loose-one', '--json']).moved, true);
   aos(['list', '--json']);
   // Refused verbs change nothing either.
@@ -1218,8 +1144,8 @@ test('containment: the verbs change only workspaces/**, brain/_index/** and a li
     assert.equal(after.get(into), before.get(k), `${k} moved unchanged`);
   }
   // Nothing inside the two trees was deleted either (spec §6, SECURITY.md: the verbs delete nothing): every regular
-  // file under workspaces/ is still there somewhere (moves keep the hash; workspace.md and .git/ may change), every
-  // Sessions thread keeps its file name, each map its bytes, and every other brain/_index path still exists.
+  // file under workspaces/ is still there somewhere (moves keep the hash; workspace.md and .git/ may change), each map
+  // its bytes, and every other brain/_index path still exists, a thread file left from Sessions included (D11: untouched).
   const fileHash = (m, k) => (String(m.get(k) || '').startsWith('file ') ? m.get(k).split(' ')[2] : null);
   const hashesUnder = (m, d, keep = () => true) => [...m.keys()].filter((k) => under(k, d) && keep(k)).map((k) => fileHash(m, k)).filter(Boolean);
   const contains = (big, small) => {
@@ -1232,9 +1158,9 @@ test('containment: the verbs change only workspaces/**, brain/_index/** and a li
   const maps = path.join('brain', '_index', 'workspace-maps');
   assert.ok(contains(hashesUnder(after, maps), hashesUnder(before, maps)), 'no map disappeared');
   const sessions = path.join('brain', '_index', 'sessions');
-  const threadNames = (m) => [...m.keys()].filter((k) => under(k, sessions) && k.endsWith('.jsonl')).map((k) => path.basename(k)).sort();
-  assert.deepEqual(threadNames(after), threadNames(before));
-  const lost = [...before.keys()].filter((k) => under(k, path.join('brain', '_index')) && !under(k, sessions, maps) && !after.has(k));
+  const threads = (m) => [...m.keys()].filter((k) => under(k, sessions)).map((k) => [k, m.get(k)]);
+  assert.deepEqual(threads(after), threads(before), 'a thread file left from Sessions stays where it was, unchanged');
+  const lost = [...before.keys()].filter((k) => under(k, path.join('brain', '_index')) && !under(k, maps) && !after.has(k));
   assert.deepEqual(lost, [], 'no other brain/_index path disappeared');
   // …and in it only the status tag line.
   const was = betaNote.split('\n');

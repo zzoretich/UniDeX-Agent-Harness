@@ -2,8 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as path from "path";
 import { createRequire } from "module";
-import * as fs from "fs";
-import { parseStatusline, isStale, barSegments, workbenchTabFrom, workbenchTabFromUrl, workbenchLinkFrom, SPACES_PANES, THREAD_ID_RE, StatuslineModel } from "./statusline";
+import { parseStatusline, isStale, barSegments, workbenchTabFrom, workbenchTabFromUrl, workbenchLinkFrom, SPACES_PANES, StatuslineModel } from "./statusline";
 
 // The on-disk contract is shared with brain/scripts/lib/statusline-model.js (spec 2026-09-28-statusline-design D3): the
 // runtime builds the model from a fixture vault and this parser must read it back field for field.
@@ -134,13 +133,6 @@ test("workbenchLinkFrom: a link with extra parameters only selects (no resume, l
   ), RAIL, NAMES);
   assert.deepEqual(link, { tab: "spaces", workspace: "harbor-map", pane: "history", thread: THREAD });
   assert.deepEqual(Object.keys(link ?? {}).sort(), ["pane", "tab", "thread", "workspace"]);
-});
-
-test("THREAD_ID_RE is the app's ThreadId (app/src/main/ipc/schemas.ts)", () => {
-  const schemas = fs.readFileSync(path.join(REPO, "app/src/main/ipc/schemas.ts"), "utf8");
-  const m = /const ThreadId = z\.string\(\)\.regex\(\/(.+)\/\);/.exec(schemas);
-  assert.ok(m, "schemas.ts declares ThreadId as z.string().regex(/…/)");
-  assert.equal(THREAD_ID_RE.source, new RegExp(m[1]).source);
 });
 
 test("remove-sessions D4: a link to Code, or to Sessions' old id, may name pane=history (Code ▸ History); no other pane, and no thread", () => {
