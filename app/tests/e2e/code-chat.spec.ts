@@ -190,6 +190,92 @@ test.describe("the Code chat surface on", () => {
     }
   });
 
+  test("an agent terminal in its chat when Code opens again has the terminal view's rows: the first flip keeps them (C1, R51)", async () => {
+    // Leaving Code and coming back mounts a new panel, which has not laid its composer out under a terminal yet. Its first
+    // fit of a terminal whose chat shows must still count the rows the terminal view will give: the stage less that view's
+    // composer, at this width. A rough 200 px default for the composer left them a row off at 1480 x 920 (34 then 33), so
+    // the first ⌘J resized the agent's PTY.
+    const { win } = app();
+    const size = () => win.evaluate((i) => {
+      const s = (window as unknown as { aosHost: { plugin: { terminalPool: { get(id: string): { dimensions: { cols: number; rows: number } } | undefined } } } }).aosHost.plugin.terminalPool.get(i);
+      return s?.dimensions ?? null;
+    }, agent);
+    const settled = async () => {
+      let last = "";
+      let same = 0;
+      await expect.poll(async () => {
+        const now = JSON.stringify(await size());
+        same = now === last ? same + 1 : 0;
+        last = now;
+        return same;
+      }, { intervals: [100] }).toBeGreaterThanOrEqual(4);
+      return (await size())!;
+    };
+    if (!agent) {
+      writeCache(KEY, conversation(SID, FX.v("workspaces/harbor-map/src/tide.ts")));
+      await openTab(win, "term");
+      agent = await startAgent(win, { host: "claude", terminalKey: KEY, sessionId: SID, label: "Tide parser" });
+    }
+    const r = await emulateViewport(win, { width: 1480, height: 920, scale: 1 });
+    const style = await win.addStyleTag({ content: "::-webkit-scrollbar { width: 15px; height: 15px; } ::-webkit-scrollbar-thumb { background: #888; border-radius: 6px; }" });
+    try {
+      await openTab(win, "term");
+      await select(win, agent);
+      await expect(chat(win)).toBeVisible();
+      await openTab(win, "pulse");
+      await openTab(win, "term");
+      await expect(chat(win)).toBeVisible();
+      const chatSize = await settled();
+      await win.keyboard.press("Meta+j");
+      await expect(body(win)).toBeVisible();
+      const termSize = await settled();
+      const moved = `${JSON.stringify(chatSize)} then ${JSON.stringify(termSize)}`;
+      expect(Math.abs(termSize.cols - chatSize.cols), moved).toBeLessThanOrEqual(1);
+      expect(termSize.rows, moved).toBe(chatSize.rows);
+      await win.keyboard.press("Meta+j");
+      await expect(chat(win)).toBeVisible();
+    } finally {
+      await r();
+    }
+    // The composer's height under a terminal depends on the width: in a narrow window its bar wraps to a second line. Code
+    // opened again at 1024 px (CI's screen) lays it out wrapped; the window then widens while the chat shows, and the
+    // chat's fit must count the rows the terminal view gives at the new width, not at the old.
+    const composerH = () => C(win).locator(".aos-tc").evaluate((n) => n.getBoundingClientRect().height);
+    let narrow = await emulateViewport(win, { width: 1024, height: 768, scale: 1 });
+    try {
+      await openTab(win, "pulse");
+      await openTab(win, "term");
+      await expect(chat(win)).toBeVisible();
+    } finally {
+      await narrow();
+    }
+    const wide = await emulateViewport(win, { width: 1480, height: 920, scale: 1 });
+    let wideH = 0;
+    try {
+      await expect.poll(async () => (await size())?.cols ?? 0).toBeGreaterThan(110);
+      const chatSize = await settled();
+      await win.keyboard.press("Meta+j");
+      await expect(body(win)).toBeVisible();
+      const termSize = await settled();
+      wideH = await composerH();
+      const moved = `1024 then 1480 x 920: ${JSON.stringify(chatSize)} then ${JSON.stringify(termSize)}`;
+      expect(Math.abs(termSize.cols - chatSize.cols), moved).toBeLessThanOrEqual(1);
+      expect(termSize.rows, moved).toBe(chatSize.rows);
+    } finally {
+      await wide();
+    }
+    // What the above needs: at 1024 px the terminal view's composer is taller than at 1480 (its bar wraps).
+    narrow = await emulateViewport(win, { width: 1024, height: 768, scale: 1 });
+    try {
+      await expect.poll(composerH).toBeGreaterThan(wideH + 10);
+      await win.keyboard.press("Meta+j");
+      await expect(chat(win)).toBeVisible();
+    } finally {
+      await narrow();
+      await style.evaluate((n) => (n as Element).remove());
+    }
+  });
+
   test("at 960x600 an agent's chat keeps its composer whole: the send button and every chip inside the window, nothing scrolls", async () => {
     const { win } = app();
     if (!agent) {
