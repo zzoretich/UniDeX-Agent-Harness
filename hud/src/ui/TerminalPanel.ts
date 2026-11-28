@@ -83,9 +83,6 @@ export interface TerminalPanelOptions {
 
 /** How long the "Started … · Change" note stays after a launch. */
 const STARTED_MS = 6000;
-/** The terminal view's composer height (px) until one is measured: a rough figure. The composer is measured whenever it
- *  is laid out under the stage, on its way into the chat too, so only a fit before it ever was uses this. */
-const TERM_COMPOSER_H = 200;
 
 export class TerminalPanel {
   private plugin: AgenticOSPlugin;
@@ -144,7 +141,6 @@ export class TerminalPanel {
         this.openLink(href, sessionForLink(view, o ? codeSession(o) : null));
       },
       renderTabs: () => this.renderTabs(),
-      measureComposer: () => this.measureTermComposer(),
     }, {
       history: () => this.model.history(),
       resume: (r) => void this.resumeHistory(r),
@@ -784,15 +780,23 @@ export class TerminalPanel {
     }
   }
 
-  /** The composer's height under the terminal view, as laid out (a fraction of a pixel too), kept while the chat shows (it
-   *  sits inside the chat then, off the stage). */
-  private termComposerH = TERM_COMPOSER_H;
-
-  /** Keeps the composer's height while it is laid out under the stage as the terminal view has it; a hidden composer, or
-   *  one already in the chat, leaves the last. */
-  private measureTermComposer(): void {
+  /** The composer's height as the terminal view lays it out at the deck's width now (a fraction of a pixel too). Its bar
+   *  wraps in a narrow window, so the height goes with the width: a height kept from another width left the chat's count a
+   *  row or two off the terminal view's, and the first ⌘J resized the PTY. While the chat shows, the composer sits in the
+   *  chat's column, so an unseen copy is laid out where the terminal view puts it, measured and removed in the same frame.
+   *  NaN with no composer (a panel that is not a deck). */
+  private termComposerHeight(): number {
     const el = this.composer?.el;
-    if (el?.isConnected && el.offsetHeight && !el.hasClass("is-chat")) this.termComposerH = el.getBoundingClientRect().height;
+    const frame = this.stage.frameEl;
+    if (!el || !frame) return NaN;
+    if (el.parentElement === frame && !el.classList.contains("is-chat")) return el.offsetHeight ? el.getBoundingClientRect().height : 0;
+    const copy = el.cloneNode(true) as HTMLElement;
+    copy.classList.remove("is-chat", "is-hidden");
+    copy.setAttribute("aria-hidden", "true");
+    copy.setAttribute("inert", "");
+    Object.assign(copy.style, { position: "absolute", visibility: "hidden", pointerEvents: "none", left: "0", top: "0", width: `${frame.clientWidth}px` });
+    frame.appendChild(copy);
+    try { return copy.getBoundingClientRect().height; } finally { copy.remove(); }
   }
 
   /** The rows the terminal view will give this terminal, counted while the chat shows: the stage's height less the
@@ -801,9 +805,10 @@ export class TerminalPanel {
     const el = b.term.element;
     const screen = b.container.querySelector<HTMLElement>(".xterm-screen");
     const line = screen && b.term.rows ? screen.clientHeight / b.term.rows : 0;
-    if (!el?.parentElement || !(line > 0)) return NaN;
+    const composer = this.termComposerHeight();
+    if (!el?.parentElement || !(line > 0) || !Number.isFinite(composer)) return NaN;
     const style = getComputedStyle(el);
-    const height = Math.floor(parseFloat(getComputedStyle(el.parentElement).height) - this.termComposerH);
+    const height = Math.floor(parseFloat(getComputedStyle(el.parentElement).height) - composer);
     return Math.floor((height - parseInt(style.paddingTop) - parseInt(style.paddingBottom)) / line);
   }
 
@@ -829,7 +834,6 @@ export class TerminalPanel {
           if (!d || (d.cols === b.term.cols && d.rows === b.term.rows)) break;
         }
         if (d) b.fittedAt = at;
-        this.measureTermComposer();
         return;
       }
       // While the chat shows, the terminal lies hidden under it at the size the terminal view last gave it, so ⌘J redraws

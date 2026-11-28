@@ -5,7 +5,7 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 ## [Unreleased]
 
 ### Fixed
-- An agent terminal shown in its chat when you come back to Code keeps its size on the first ⌘J to the terminal view. It was sized a row taller than that view gives, so the first flip resized the agent's terminal and its screen redrew.
+- An agent terminal shown in its chat keeps its size on the first ⌘J to the terminal view, after you come back to Code or resize the window while the chat shows. It was sized from the composer's height at another width (or a rough guess), a row or two off what that view gives, so the first flip resized the agent's terminal and its screen redrew.
 
 ## [2.9.0] — 2026-11-27
 

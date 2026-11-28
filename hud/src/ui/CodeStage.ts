@@ -37,8 +37,6 @@ export interface CodeStageHost {
   /** `view`: which chat the click came from; a past conversation's has no browser (session-browser S1). */
   openLink(href: string, view: "live" | "past"): void;
   renderTabs(): void;
-  /** The composer is laid out as the terminal view has it, under the stage: the panel keeps its height (code-chat R51). */
-  measureComposer(): void;
 }
 
 export class CodeStage {
@@ -197,10 +195,6 @@ export class CodeStage {
     this.pastChat?.setVisible(past);
     if (past || history) { chat.setVisible(false); return; }
     const on = this.chatShown();
-    // On its way into the chat's column the composer is still laid out as the terminal view has it: the panel takes its
-    // height now, so the chat's fit counts the rows the terminal view will give (R51), on a panel that never showed this
-    // terminal's view too (Code mounted again, or the chat in front before the first terminal fit).
-    if (on && composer.el.parentElement === frame && !composer.el.hasClass("is-chat")) this.host.measureComposer();
     const was = stage.hasClass("is-chat");
     stage.toggleClass("is-chat", on);
     composer.setMode(on ? "chat" : "terminal");
