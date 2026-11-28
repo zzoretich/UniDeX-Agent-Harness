@@ -4,6 +4,8 @@ All notable changes to UniDeX (AgenticOS Workbench before 1.1). Versions follow 
 
 ## [Unreleased]
 
+## [2.9.1] — 2026-11-27
+
 ### Fixed
 - An agent terminal shown in its chat keeps its size on the first ⌘J to the terminal view, after you come back to Code or resize the window while the chat shows. It was sized from the composer's height at another width (or a rough guess), a row or two off what that view gives, so the first flip resized the agent's terminal and its screen redrew.
 
@@ -825,7 +827,8 @@ The first public release: an `aos` CLI, the AgenticOS runtime, a Claude Code plu
 - Update notifications: a GitHub release check surfaced as a session-start notice.
 - Docs: README, install guide, and a release acceptance runbook.
 
-[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.9.0...HEAD
+[Unreleased]: https://github.com/zzoretich/UniDeX-Agent-Harness/compare/v2.9.1...HEAD
+[2.9.1]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.9.1
 [2.9.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.9.0
 [2.8.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.8.0
 [2.7.0]: https://github.com/zzoretich/UniDeX-Agent-Harness/releases/tag/v2.7.0

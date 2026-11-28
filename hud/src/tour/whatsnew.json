@@ -2,6 +2,10 @@
   "schema": 1,
   "releases": [
     {
+      "version": "2.9.1",
+      "entries": []
+    },
+    {
       "version": "2.9.0",
       "entries": [
         {
